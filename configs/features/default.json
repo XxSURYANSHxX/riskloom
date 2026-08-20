@@ -1,0 +1,7 @@
+{
+  "config_schema_version": "1.0.0",
+  "feature_schema_version": "1.0.0",
+  "rolling_windows_seconds": [60, 300, 3600],
+  "checkout_history_window_seconds": 3600,
+  "failure_rate_window_seconds": 300
+}

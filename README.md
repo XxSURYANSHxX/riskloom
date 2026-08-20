@@ -107,6 +107,79 @@ are typed and prefixed; `payment_instrument_token` is explicitly allowed. The ge
 name field, name configuration, or name-generation dependency/code path. Labels may be inspected
 only to validate construction and evaluate future work; Day 2 does not add model training.
 
+## Day 3 causal temporal features
+
+The isolated `riskloom.features` package converts the chronological model-visible Day 2 event
+stream into exactly 75 integer-valued temporal, velocity, and coordination features. It does not
+read labels, split boundaries, scenarios, campaigns, generator metadata, or the Day 2 manifest.
+It does not expose an endpoint, persist features, contact a network, score risk, train a model, or
+make a payment decision.
+
+For an event at time `t`, a window of `W` seconds contains only already processed events satisfying
+`t - W < prior_time <= t`. An event exactly `W` seconds old is expired. Previously processed events
+at the same timestamp are included in deterministic event-ID order. Processing always validates
+and evicts first, computes and validates the current feature record from prior state, then updates
+state with the current event. The current outcome can therefore affect only future feature rows.
+
+The version 1.0.0 schema contains:
+
+| Family | Features |
+| --- | ---: |
+| Safe current-event amount/time/channel/missingness | 9 |
+| Checkout retry history within 3,600 seconds | 3 |
+| Merchant rolling history | 15 |
+| Device rolling history | 12 |
+| Network rolling history | 15 |
+| Instrument rolling history | 10 |
+| Session rolling history | 6 |
+| Prior 300-second failure rates in integer basis points | 5 |
+| **Total** | **75** |
+
+Rolling windows are locked to 60, 300, and 3,600 seconds. Deques bound observation state by event
+time, and reference-counted relationship counters preserve exact distinct counts during eviction.
+Missing devices and networks never share a null bucket. Checkout history also expires after 3,600
+seconds. Failure rates use floor integer arithmetic and return zero when no prior attempt exists.
+
+Extract and validate smoke features:
+
+```powershell
+uv run python -m riskloom.features extract `
+  --events artifacts/simulations/smoke/events.jsonl `
+  --config configs/features/default.json `
+  --output-dir artifacts/features/smoke
+
+uv run python -m riskloom.features validate `
+  --events artifacts/simulations/smoke/events.jsonl `
+  --config configs/features/default.json `
+  --input-dir artifacts/features/smoke
+```
+
+The output contains canonical `features.jsonl`, aggregate-only `report.json`, and `manifest.json`.
+The manifest records the exact source-events SHA-256, effective feature configuration, versions,
+row count, sizes, and hashes of the feature and report files. It does not hash itself or contain a
+path, timestamp, label, seed, or split. Dataset identity depends on the exact source bytes and
+canonical effective configuration, not the output directory.
+
+Feature rows contain only `event_id`, `occurred_at`, and the exact 75-key integer feature mapping.
+They never emit current outcome, failure category, currency, entity tokens, labels, truth,
+campaign data, split values, scores, thresholds, decisions, or predictions. Reports contain only
+integer aggregate distributions and aggregate state-size diagnostics.
+
+Extraction and validation stream source events and feature rows without retaining full datasets in
+memory. Exact percentile frequency counters retain integer frequencies only. Existing output can
+be replaced with `--overwrite` only when it is already a fully valid RiskLoom feature dataset for
+the same source bytes and configuration. Staging and manifest-last publication provide a
+completeness marker, not a fully atomic three-file transaction. Generated features under
+`artifacts/features/` are ignored and must not be committed. Generate the 100,000-row development
+artifact only as an explicit manual verification command:
+
+```powershell
+uv run python -m riskloom.features extract `
+  --events artifacts/simulations/development/events.jsonl `
+  --config configs/features/default.json `
+  --output-dir artifacts/features/development
+```
+
 ## Prerequisites
 
 - Python 3.11

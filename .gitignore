@@ -19,6 +19,7 @@ secrets/
 *.p12
 *.pfx
 /artifacts/simulations/
+/artifacts/features/
 dist/
 build/
 .idea/

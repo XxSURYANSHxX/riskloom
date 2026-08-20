@@ -81,3 +81,33 @@ These instructions apply to the entire repository.
 - Generated datasets belong under the ignored `artifacts/simulations/` tree and must not be
   committed. Use tiny deterministic configurations in pytest. Generate the 100,000-event profile
   only as an explicit manual verification command.
+
+## Causal feature-engine invariants
+
+- Keep `riskloom.features` isolated from labels, simulation generation and validation modules,
+  FastAPI, databases, Razorpay, network transports, subprocesses, dynamic imports, and model or
+  policy code. Feature extraction accepts only the model-visible `CheckoutAttemptEvent` stream.
+- Preserve the version 1.0.0 schema of exactly 75 integer features. Event ID and occurrence time
+  are join/audit metadata, not model features. A name, formula, sentinel, window, boundary, or
+  ordering change requires an explicit feature schema and/or engine version increment.
+- Process every event in this order: validate typed input and strict `(occurred_at, event_id)`
+  ordering; evict expired state; compute and validate its feature record from prior state; update
+  state with the current event; commit the ordering key; return the precomputed record. A failed
+  feature construction must not update state.
+- Use event-time windows with `(current_time - window, current_time]` semantics over prior processed
+  events. An event exactly on the left boundary is expired. Same-timestamp events are causal in
+  event-ID order. Do not reset at dataset split boundaries.
+- Keep causal state bounded to 3,600 seconds with globally evicted deques and reference-counted
+  relationship counters. Do not retain global event IDs or expired entity buckets. Missing device
+  or network tokens never form a shared null bucket and always produce zero history features.
+- Read current outcome only while updating state for future events. Never use current outcome,
+  failure category, currency, entity tokens, labels, scenarios, campaigns, splits, generator
+  metadata, risk scores, thresholds, decisions, or predictions as model features.
+- Canonical feature artifacts use UTF-8, LF, compact sorted-key JSON and integer-only statistics.
+  Validate source events and feature rows in streaming lockstep. Hash exact source bytes and reject
+  changes between hashing, extraction, validation, and publication.
+- Publish only `features.jsonl`, `report.json`, and `manifest.json` through a scoped sibling staging
+  directory. Overwrite only a fully valid RiskLoom feature dataset for the same exact source bytes
+  and effective configuration. Replace the manifest last and never remove unknown content.
+- Generated feature artifacts belong under ignored `artifacts/features/` and must not be committed.
+  The 100,000-event development extraction is a manual verification, not a pytest fixture.
