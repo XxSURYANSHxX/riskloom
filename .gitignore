@@ -18,6 +18,7 @@ secrets/
 *.pem
 *.p12
 *.pfx
+/artifacts/simulations/
 dist/
 build/
 .idea/

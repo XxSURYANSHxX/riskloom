@@ -1,0 +1,41 @@
+{
+  "config_schema_version": "1.0.0",
+  "dataset_profile": "development",
+  "start_at": "2026-01-01T00:00:00Z",
+  "currency": "INR",
+  "merchant_count": 12,
+  "entity_pools": {
+    "customers": 30000,
+    "devices": 24000,
+    "networks": 8000,
+    "instruments": 40000
+  },
+  "controlled_test_shift": {
+    "minimum_unique_entity_ratio_multiplier": 2,
+    "maximum_unique_network_ratio_basis_points": 5000,
+    "minimum_network_presence_basis_points": 9000
+  },
+  "splits": [
+    {
+      "name": "train",
+      "duration_days": 20,
+      "event_count": 66000,
+      "campaign_count": 8,
+      "campaign_profile": "baseline_reuse"
+    },
+    {
+      "name": "calibration",
+      "duration_days": 5,
+      "event_count": 17000,
+      "campaign_count": 3,
+      "campaign_profile": "baseline_reuse"
+    },
+    {
+      "name": "test",
+      "duration_days": 5,
+      "event_count": 17000,
+      "campaign_count": 3,
+      "campaign_profile": "entity_reuse_shift"
+    }
+  ]
+}

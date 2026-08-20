@@ -4,6 +4,13 @@ RiskLoom is a defense-only, shadow-mode risk-management backend for detecting co
 card-testing activity. Day 1 establishes secure Razorpay test-mode webhook ingestion and an
 internal Orders API adapter. It does not score, block, capture, or otherwise decide payments.
 
+Day 2 adds an isolated deterministic simulator for privacy-safe checkout-attempt domain events
+and an in-process event replayer. It does not send requests, execute payments, persist simulation
+data to PostgreSQL, or expose another API route.
+
+The generated artifacts are synthetic evaluation fixtures, not observations of real fraud or
+payment traffic. RiskLoom makes no production fraud-accuracy claim from these datasets.
+
 ## Day 1 capabilities
 
 - Python 3.11 FastAPI modular monolith.
@@ -14,6 +21,91 @@ internal Orders API adapter. It does not score, block, capture, or otherwise dec
 - Allowlisted audit projections and exact-body SHA-256 digests; raw bodies are never persisted.
 - Internal-only Razorpay test-mode Orders client using httpx.
 - Structured logs, liveness/readiness checks, and PostgreSQL integration tests.
+
+## Day 2 deterministic simulation
+
+The `riskloom.simulation` package produces four canonical UTF-8/LF artifacts. JSON is compact and
+key-sorted, identifiers are UUIDv5 values serialized through `uuid.hex`, and rates are integer
+ratios plus fixed-decimal strings. Given Python 3.11, the same seed, generator/config versions, and
+effective configuration, every artifact is byte-identical regardless of the output directory.
+
+- `events.jsonl` contains strict model-visible synthetic checkout-attempt events only.
+- `labels.jsonl` contains the separately typed evaluation truth joined one-to-one by `event_id`.
+- `report.json` contains sorted aggregate counts, ratios, and reuse summaries without raw IDs.
+- `manifest.json` contains versions, effective configuration, dataset identity, split boundaries,
+  and SHA-256 metadata for the other three files. It intentionally does not hash itself.
+
+Only `event_id` is globally unique. Merchant, checkout, customer, device, network, session, and
+payment-instrument tokens are deliberately reusable so the data can represent legitimate retries,
+flash sales, shared infrastructure, ordinary failures, and harmless coordinated-risk patterns.
+The test split uses a controlled entity-reuse shift that exists only in test labels and generated
+entity relationships, never as a model-visible marker.
+
+That shift has one fixed direction and deterministic policy. For attacks, the test split must have
+at least twice the unique-device-per-attack-event ratio and twice the
+unique-session-per-attack-event ratio of both train and calibration. Validation uses integer
+cross-products, so the reciprocal attack-events-per-device and attack-events-per-session ratios
+must decrease without floating-point comparisons. Network coordination remains concentrated in
+every split: unique attack networks may be at most 5,000/10,000 of attack events and at least
+9,000/10,000 attack events must retain a network token. These thresholds are part of the effective
+configuration and report; payment instruments are not used to define the shift.
+
+The built-in profiles allocate every scenario by exact integer event counts in every chronological
+split; generation never rounds or samples scenario quotas.
+
+| Profile | Train | Calibration | Test | Total | Timeline |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Smoke | 1,400 | 300 | 300 | 2,000 | 6 UTC days (4/1/1) |
+| Development | 66,000 | 17,000 | 17,000 | 100,000 | 30 UTC days (20/5/5) |
+
+Each split is exactly 70% normal, 8% legitimate retry, 12% flash sale, 5% shared
+infrastructure, 3% legitimate failure, and 2% attack-labelled campaign events. Retry chains and
+campaigns consume exactly their assigned event quotas.
+
+Generate the smoke profile with reserved synthetic data:
+
+```powershell
+uv run python -m riskloom.simulation generate `
+  --config configs/simulation/smoke.json `
+  --seed 20260820 `
+  --output-dir artifacts/simulations/smoke
+```
+
+Generate the larger development artifact only as a deliberate manual check, not in pytest:
+
+```powershell
+uv run python -m riskloom.simulation generate `
+  --config configs/simulation/development.json `
+  --seed 20260820 `
+  --output-dir artifacts/simulations/development
+```
+
+Generated datasets under `artifacts/simulations/` are ignored by Git. Generation refuses unsafe
+root/repository output targets, non-empty destinations, symlinked destinations, and overwrite of
+unknown files. `--overwrite` is accepted only for a directory containing the four recognized
+RiskLoom artifacts whose existing manifest, hashes, canonical bytes, report, and schemas all
+validate. Files are validated in a sibling staging directory, then published with the manifest
+last. The manifest is a completeness marker; publication is not a fully atomic four-file
+filesystem transaction, and interrupted or partial publication fails later validation.
+
+Replay model-visible events locally with no delay:
+
+```powershell
+uv run python -m riskloom.simulation replay `
+  --events artifacts/simulations/smoke/events.jsonl `
+  --timing no-delay
+```
+
+Replay is in-process and event-only. It has no label argument or import, HTTP/socket/URL target,
+Razorpay adapter, retry, or remote transport. Scaled timing is bounded and intended for tests with
+an injected fake clock; do not wait through a real multi-day dataset timeline.
+
+Simulation events cannot contain PAN, CVV/CVC, expiry, email, phone/contact, address, VPA/UPI ID,
+IP address, raw payload, names, or arbitrary free-form fields. Strict schemas reject unknown keys,
+and validation recursively checks the explicit prohibited-field denylist. Safe synthetic tokens
+are typed and prefixed; `payment_instrument_token` is explicitly allowed. The generator has no
+name field, name configuration, or name-generation dependency/code path. Labels may be inspected
+only to validate construction and evaluate future work; Day 2 does not add model training.
 
 ## Prerequisites
 

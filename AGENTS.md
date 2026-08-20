@@ -45,3 +45,39 @@ These instructions apply to the entire repository.
   pytest suite before handoff.
 - Verify Alembic upgrade, downgrade, re-upgrade, and `alembic check` for schema work.
 - Do not create a commit unless the user explicitly asks for one.
+
+## Deterministic simulation invariants
+
+- Keep `riskloom.simulation` isolated from the API, database, Razorpay integration, and production
+  webhook path. Simulation changes must not add endpoints, migrations, persistence, or network I/O.
+- Synthetic events and evaluation labels are separate strict schemas. Replay consumes only the
+  event schema and must never import, accept, or inspect labels or expose an HTTP, socket, URL,
+  Razorpay, or other remote transport surface.
+- Only `event_id` is globally unique. Entity tokens are intentionally reusable; do not add global
+  uniqueness assertions for merchants, checkouts, customers, devices, networks, sessions, or
+  payment instruments.
+- Preserve the event invariant in both directions: authorized events have
+  `failure_category=null`, and failed events have a non-null allowed failure category.
+- Build all IDs with deterministic UUIDv5 and serialize the UUID through `uuid.hex`. Derive
+  independent PRNG streams with SHA-256 from the seed, split, and component name.
+- Preserve exact integer scenario quotas in every split. Retry chains and campaigns must consume
+  their event allocations exactly even though they group events.
+- Preserve the controlled test-shift policy from configuration and validate it using integer
+  cross-products: test attack unique-device/event and unique-session/event ratios are at least 2x
+  both train and calibration, so events/device and events/session decrease. Keep attack network
+  uniqueness at or below 5,000 basis points and network presence at or above 9,000 basis points.
+  Do not substitute or claim an instruments-per-device direction for this invariant.
+- Canonical artifacts use UTF-8, LF endings, compact JSON, sorted keys, and no uncontrolled float,
+  wall-clock timestamp, host data, locale, absolute path, or output-directory-dependent identity.
+  Sort every distribution derived from mappings. The manifest hashes events, labels, and report,
+  never itself.
+- Treat staged, validated, manifest-last publication as a completeness marker, not a fully atomic
+  multi-file transaction. Refuse unsafe locations and unknown-file overwrites without adding a
+  generalized filesystem-management layer.
+- Recursively reject the explicit prohibited field set: card number/PAN, CVV/CVC, expiry, email,
+  phone/contact, address/billing address, VPA/UPI ID, IP address, and raw payload. Do not reject the
+  typed `payment_instrument_token`. Do not claim to detect arbitrary human names; keep all name
+  fields, configuration, generators, and dependencies absent.
+- Generated datasets belong under the ignored `artifacts/simulations/` tree and must not be
+  committed. Use tiny deterministic configurations in pytest. Generate the 100,000-event profile
+  only as an explicit manual verification command.
