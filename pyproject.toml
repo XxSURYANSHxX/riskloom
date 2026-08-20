@@ -1,0 +1,63 @@
+[project]
+name = "riskloom"
+version = "0.1.0"
+description = "Defense-only, shadow-mode card-testing risk management backend"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "alembic>=1.19.1,<2",
+    "asyncpg>=0.31.0,<1",
+    "fastapi>=0.141.1,<1",
+    "httpx>=0.28.1,<1",
+    "pydantic>=2.13.4,<3",
+    "pydantic-settings>=2.15.0,<3",
+    "sqlalchemy[asyncio]>=2.0.52,<3",
+    "structlog>=26.1.0,<27",
+    "uvicorn[standard]>=0.52.4,<1",
+]
+
+[project.scripts]
+riskloom = "riskloom.main:run"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1,<3",
+    "pytest>=9.1.1,<10",
+    "pytest-asyncio>=1.4.0,<2",
+    "pytest-cov>=7.1.0,<8",
+    "respx>=0.23.1,<1",
+    "ruff>=0.16.3,<1",
+    "testcontainers[postgres]>=4.15.0,<5",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: requires a disposable PostgreSQL container",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["riskloom"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["ASYNC", "B", "E", "F", "I", "SIM", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
