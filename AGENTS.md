@@ -135,3 +135,34 @@ These instructions apply to the entire repository.
   and effective configuration. Replace the manifest last and never remove unknown content.
 - Generated feature artifacts belong under ignored `artifacts/features/` and must not be committed.
   The 100,000-event development extraction is a manual verification, not a pytest fixture.
+
+## Offline modeling invariants
+
+- Keep `riskloom.modeling` offline and isolated from FastAPI, databases, Razorpay, HTTP, sockets,
+  subprocesses, dynamic imports, and remote transports. It may use only the standard library,
+  Pydantic, NumPy, scikit-learn, the strict feature schema, and the minimum simulation schemas
+  needed to validate labels and the locked development contract.
+- Train only against the exact approved development simulation and feature identities and hashes.
+  Validate labels through the Day 2 manifest and exact label-file hash; training does not require or
+  open raw events. Refuse any profile other than the exact `development` schema 1.1.0 contract.
+- Subdivide calibration at `start + floor(duration_ms * 6000 / 10000)`. `calibration_fit` is
+  strictly before the timestamp; `policy_selection` is equal or later. Fit preprocessing, class
+  weights, and candidates on train only; fit Platt calibration on calibration-fit only; select the
+  candidate and cost-sensitive threshold on policy-selection only.
+- Training must discard held-out features and must not validate, read, store, or report held-out
+  targets. `validate-model` may sample held-out feature vectors for inference parity only after a
+  locked model has passed canonical schema, identity, and hash validation. Official evaluation is
+  a separate fit-free command and requires explicit review approval.
+- Persist models only as strict canonical data-only JSON. Never use pickle, cloudpickle, joblib,
+  arbitrary object deserialization, callbacks, code loading, or estimator persistence. Validate
+  tree topology, feature order, class order, finite values, and dimensions before inference.
+- Compare the in-memory winning estimator with portable inference on deterministic train,
+  calibration-fit, and policy-selection samples before publication. `validate-model` independently
+  retrains and repeats parity checks. Publish model, aggregate-only report, and manifest through a
+  process-owned sibling staging directory, with the manifest last and no overwrite surface.
+- Keep average precision distinct from trapezoidal PR-AUC. Use `null` for rates over empty
+  hard-negative slices. Include completely missed campaigns as zero flagged events in campaign
+  distributions. Never place raw event/entity/campaign IDs or per-event predictions in reports.
+- Generated model and evaluation artifacts belong under ignored `artifacts/models/` and
+  `artifacts/evaluations/`. Do not run the official development held-out evaluation unless the user
+  explicitly authorizes that separate gate.

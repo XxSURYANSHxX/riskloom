@@ -108,7 +108,7 @@ Generate the larger development artifact only as a deliberate manual check, not 
 uv run python -m riskloom.simulation generate `
   --config configs/simulation/development.json `
   --seed 20260820 `
-  --output-dir artifacts/simulations/development-v1.1.0
+  --output-dir artifacts/simulations/development-v1.1.0-config-bound-a
 ```
 
 Generated datasets under `artifacts/simulations/` are ignored by Git. Generation refuses unsafe
@@ -206,10 +206,79 @@ artifact only as an explicit manual verification command:
 
 ```powershell
 uv run python -m riskloom.features extract `
-  --events artifacts/simulations/development-v1.1.0/events.jsonl `
+  --events artifacts/simulations/development-v1.1.0-config-bound-a/events.jsonl `
   --config configs/features/default.json `
-  --output-dir artifacts/features/development-v1.1.0
+  --output-dir artifacts/features/development-v1.1.0-config-bound
 ```
+
+## Day 4 offline model locking
+
+The isolated `riskloom.modeling` package trains two fixed tabular candidates against the exact
+approved development artifacts: standardized logistic regression and conservative gradient
+boosting. NumPy and scikit-learn are runtime dependencies only for offline fitting and independent
+validation; the locked model is canonical, data-only JSON and never pickle, cloudpickle, joblib, or
+executable estimator state.
+
+The modeling configuration pins every source identity and hash, all candidate and Platt-calibrator
+parameters (including `random_state`), the fixed 1:25 false-positive/false-negative cost policy,
+feature order, and the calibration boundary. The source simulation must be profile `development`,
+generator/configuration 1.1.0, and the exact approved effective-configuration fingerprint. Labels
+are validated through the Day 2 manifest and exact label-file hash; model training never opens raw
+events.
+
+Calibration is divided only by timestamp at
+`calibration_start + floor(calibration_duration_ms * 6000 / 10000)`. Rows strictly before the
+timestamp form `calibration_fit`; equal or later rows form `policy_selection`. The approved data
+currently yields 9,048 and 7,952 rows respectively, with 170 attacks and five complete campaigns
+on each side. Preprocessing, balanced weights, and both candidates fit on train only. Platt
+calibration fits on calibration-fit only. Candidate and threshold selection use policy-selection
+only. Average precision and trapezoidal PR-AUC are reported as distinct metrics.
+
+Policy reports include row/class counts, prevalence, confusion counts, precision, recall,
+specificity, F1, false positives per 10,000 legitimate events, review workload, configured cost,
+ranking metrics, Brier score, log loss, and fixed ten-bin reliability/ECE results. Legitimate
+scenario slices report false-positive counts, rates, per-10,000 rates, and abstract cost units;
+empty slices use `null` rates. Campaign summaries retain completely missed campaigns as zero
+flagged events and report campaign recall plus first-attack-to-first-flag delay in integer
+milliseconds. These metrics describe synthetic data only and are not production accuracy or
+merchant-loss claims.
+
+Point the commands at directories whose manifests match the exact identities pinned in
+`configs/modeling/default.json`. In the current local verification workspace, those approved bytes
+are in the `development-v1.1.0-config-bound-a` simulation directory and
+`development-v1.1.0-config-bound` feature directory:
+
+```powershell
+uv run python -m riskloom.modeling train `
+  --simulation-dir artifacts/simulations/development-v1.1.0-config-bound-a `
+  --feature-dir artifacts/features/development-v1.1.0-config-bound `
+  --config configs/modeling/default.json `
+  --output-dir artifacts/models/development
+
+uv run python -m riskloom.modeling validate-model `
+  --simulation-dir artifacts/simulations/development-v1.1.0-config-bound-a `
+  --feature-dir artifacts/features/development-v1.1.0-config-bound `
+  --config configs/modeling/default.json `
+  --model-dir artifacts/models/development
+```
+
+Training discards held-out feature rows and never accesses or validates held-out targets.
+`validate-model` first validates the locked canonical artifact, independently retrains from
+train/calibration data, compares byte identity, and then may use a bounded deterministic sample of
+held-out features only for sklearn/portable inference parity. Training reports contain aggregate
+train, calibration-fit, and policy-selection results only—never raw identifiers, predictions,
+held-out counts, or held-out metrics.
+
+The `evaluate-test` command exists for a later, separately approved gate. It performs portable
+inference against an already locked model and has no fit path. Do not run it on the official
+development partition before that approval. Generated model and evaluation directories are ignored
+by Git, publication is manifest-last with no overwrite option, and a non-empty destination is
+always refused.
+
+Byte determinism is guaranteed only for the same Python, NumPy, scikit-learn and dependency-lock
+versions, exact source bytes, effective configuration, operating system, CPU/numerical environment,
+and fixed seeds. It is not claimed across CPU architectures, BLAS implementations, platforms, or
+dependency versions.
 
 ## Prerequisites
 

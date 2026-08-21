@@ -20,6 +20,8 @@ secrets/
 *.pfx
 /artifacts/simulations/
 /artifacts/features/
+/artifacts/models/
+/artifacts/evaluations/
 dist/
 build/
 .idea/
