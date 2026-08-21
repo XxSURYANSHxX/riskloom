@@ -62,6 +62,37 @@ Each split is exactly 70% normal, 8% legitimate retry, 12% flash sale, 5% shared
 infrastructure, 3% legitimate failure, and 2% attack-labelled campaign events. Retry chains and
 campaigns consume exactly their assigned event quotas.
 
+Day 2.1 preserves configuration and algorithm `1.0.0` byte-for-byte, including its UUID namespace,
+PRNG draw order, campaign construction, canonical artifacts, and validation of historical
+datasets. Schema `1.1.0` is used for the development profile's calibration placement. Its canonical
+effective-configuration SHA-256 is recorded in the manifest and binds every UUID and independent
+PRNG stream, so changing output-affecting configuration with the same seed changes the generated
+identity and data. The tracked development contract rejects changes to its approved split quotas,
+campaign profiles, controlled test shift, or placement settings before generation.
+
+Schema `1.1.0` profile contracts are selected from the effective configuration, never from a file
+or directory name. `development` is the exact locked 100,000-event contract. Generic `smoke`
+fixtures are limited to 3,000 total events, 1,400 events and 28 attacks per split, 60 attacks total,
+six total days and four days per split, and ten campaigns per split. Protected placement is further
+limited to five campaigns per side and 4,096 sampling attempts per campaign. These are the smallest
+ceilings that retain the tracked six-day smoke shape and the reduced 3,000-row irregular-placement
+test profile while preventing a relabelled development-scale configuration. Loading, generation
+preflight, and artifact validation all apply the same profile-contract validator. Algorithm `1.0.0`
+retains its historical configuration behavior and bytes.
+
+Every public generation path first dumps the supplied configuration in Python mode, reconstructs a
+fresh strict `GeneratorConfig`, and uses only that isolated snapshot. This occurs before output-path
+inspection or staging, so post-construction mutation, schema downgrade, unknown fields, and invalid
+numeric types fail without changing the destination.
+
+The ten development calibration campaigns contain exactly 34 attack events each. Five complete
+campaigns occur before a protected timestamp and five occur at or after it; none crosses it. The
+timestamp is computed with integer milliseconds as
+`calibration_start + floor(calibration_duration_ms * 6000 / 10000)`. Campaign windows are sampled
+from independent seeded streams across the full permitted intervals, with no equal periodic slots.
+They cannot overlap and must retain at least a five-minute gap. These are construction controls for
+synthetic evaluation data, not operational payment-testing instructions.
+
 Generate the smoke profile with reserved synthetic data:
 
 ```powershell
@@ -77,7 +108,7 @@ Generate the larger development artifact only as a deliberate manual check, not 
 uv run python -m riskloom.simulation generate `
   --config configs/simulation/development.json `
   --seed 20260820 `
-  --output-dir artifacts/simulations/development
+  --output-dir artifacts/simulations/development-v1.1.0
 ```
 
 Generated datasets under `artifacts/simulations/` are ignored by Git. Generation refuses unsafe
@@ -175,9 +206,9 @@ artifact only as an explicit manual verification command:
 
 ```powershell
 uv run python -m riskloom.features extract `
-  --events artifacts/simulations/development/events.jsonl `
+  --events artifacts/simulations/development-v1.1.0/events.jsonl `
   --config configs/features/default.json `
-  --output-dir artifacts/features/development
+  --output-dir artifacts/features/development-v1.1.0
 ```
 
 ## Prerequisites

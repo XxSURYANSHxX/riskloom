@@ -62,6 +62,30 @@ These instructions apply to the entire repository.
   independent PRNG streams with SHA-256 from the seed, split, and component name.
 - Preserve exact integer scenario quotas in every split. Retry chains and campaigns must consume
   their event allocations exactly even though they group events.
+- Preserve simulation algorithm and configuration `1.0.0` byte-for-byte: retain its UUID inputs,
+  PRNG stream material and draw order, campaign path, effective-configuration representation,
+  artifacts, and historical validation. It never accepts a configuration fingerprint or campaign
+  placement. Schema `1.1.0` binds every identifier and PRNG stream to the canonical SHA-256 of the
+  complete effective configuration and records that fingerprint in provenance.
+- Keep the generic `1.1.0` placement schema reusable for non-development tests, but lock the tracked
+  development contract before generation. Development calibration has ten equal 34-event
+  campaigns. Compute its protected
+  timestamp as `start + floor(duration_ms * 6000 / 10000)`: before means strictly earlier, and
+  after means equal or later. Place at least five complete campaigns on each side and never allow a
+  campaign to cross the boundary.
+- Select schema `1.1.0` profile contracts only from the canonical effective configuration, never a
+  filename or output path. `development` is the exact locked contract. `smoke` permits at most 3,000
+  total events, 1,400 events and 28 attacks per split, 60 attacks total, six total days, four days
+  per split, and ten campaigns per split; protected placement permits at most five campaigns per
+  side and 4,096 attempts per campaign. Apply the shared contract during model validation, config
+  loading, generation preflight, and artifact validation. Do not apply these new bounds to `1.0.0`.
+- At every public generation entry, rebuild a strict `GeneratorConfig` from
+  `config.model_dump(mode="python")` before any output-path or staging operation. Apply the shared
+  profile contract to that snapshot and use only the snapshot afterward. Reject mutated Boolean,
+  fractional, negative, malformed, unknown, downgraded, or structurally incompatible values.
+- Campaign placement must use independent seeded irregular sampling across the permitted time
+  intervals, never equal periodic slots. Constrained campaign windows cannot overlap and must keep
+  the configured five-minute gap.
 - Preserve the controlled test-shift policy from configuration and validate it using integer
   cross-products: test attack unique-device/event and unique-session/event ratios are at least 2x
   both train and calibration, so events/device and events/session decrease. Keep attack network

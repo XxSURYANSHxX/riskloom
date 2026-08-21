@@ -1,5 +1,5 @@
 {
-  "config_schema_version": "1.0.0",
+  "config_schema_version": "1.1.0",
   "dataset_profile": "development",
   "start_at": "2026-01-01T00:00:00Z",
   "currency": "INR",
@@ -27,8 +27,15 @@
       "name": "calibration",
       "duration_days": 5,
       "event_count": 17000,
-      "campaign_count": 3,
-      "campaign_profile": "baseline_reuse"
+      "campaign_count": 10,
+      "campaign_profile": "baseline_reuse",
+      "campaign_placement": {
+        "protected_boundary_basis_points": 6000,
+        "minimum_campaigns_before_boundary": 5,
+        "minimum_campaigns_after_boundary": 5,
+        "minimum_gap_seconds": 300,
+        "maximum_sampling_attempts_per_campaign": 4096
+      }
     },
     {
       "name": "test",

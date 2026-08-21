@@ -2,7 +2,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from random import Random
 
-from riskloom.simulation.config import GeneratorConfig, SplitConfig
+from riskloom.simulation.config import (
+    GeneratorConfig,
+    SplitConfig,
+    boundary_timestamp,
+    configuration_fingerprint,
+    generator_version_for_config,
+    validated_configuration_snapshot,
+)
 from riskloom.simulation.event_schema import (
     Channel,
     CheckoutAttemptEvent,
@@ -22,6 +29,16 @@ from riskloom.simulation.label_schema import (
 class GeneratedRecord:
     event: CheckoutAttemptEvent
     label: GroundTruthLabel
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignWindow:
+    start: datetime
+    duration_ms: int
+
+    @property
+    def end(self) -> datetime:
+        return self.start + timedelta(milliseconds=self.duration_ms)
 
 
 def _allocate_weighted(count: int, weights: dict[str, int], rng: Random) -> list[str]:
@@ -48,6 +65,10 @@ def _split_into_groups(total: int, group_count: int) -> list[int]:
     return [base + (1 if index < remainder else 0) for index in range(group_count)]
 
 
+def _timedelta_milliseconds(value: timedelta) -> int:
+    return value.days * 86_400_000 + value.seconds * 1_000 + value.microseconds // 1_000
+
+
 def _retry_group_sizes(total: int, minimum: int, maximum: int, rng: Random) -> list[int]:
     sizes: list[int] = []
     remaining = total
@@ -70,13 +91,16 @@ def _retry_group_sizes(total: int, minimum: int, maximum: int, rng: Random) -> l
 
 class SimulationGenerator:
     def __init__(self, config: GeneratorConfig, seed: int) -> None:
+        validated_config = validated_configuration_snapshot(config)
         if type(seed) is not int or not 0 <= seed <= 2**63 - 1:
             raise ValueError("seed_out_of_range")
-        self.config = config
+        self.config = validated_config
         self.seed = seed
+        self.algorithm_version = generator_version_for_config(validated_config)
+        self.configuration_fingerprint = configuration_fingerprint(validated_config)
         self.merchants = [
-            deterministic_identifier("mrc", seed, "merchant", index)
-            for index in range(config.merchant_count)
+            self._identifier("mrc", "merchant", index)
+            for index in range(validated_config.merchant_count)
         ]
         self.catalogs = self._build_catalogs()
 
@@ -113,12 +137,31 @@ class SimulationGenerator:
             raise ValueError("generated_event_count_mismatch")
         return records
 
+    def _identifier(self, prefix: str, kind: str, *parts: str | int) -> str:
+        return deterministic_identifier(
+            prefix,
+            self.seed,
+            kind,
+            *parts,
+            algorithm_version=self.algorithm_version,
+            configuration_fingerprint=self.configuration_fingerprint,
+        )
+
+    def _random_stream(self, split: str, component: str) -> Random:
+        return random_stream(
+            self.seed,
+            split,
+            component,
+            algorithm_version=self.algorithm_version,
+            configuration_fingerprint=self.configuration_fingerprint,
+        )
+
     def _build_catalogs(self) -> dict[str, list[int]]:
         catalogs: dict[str, list[int]] = {}
         span = self.config.amount_maximum_subunits - self.config.amount_minimum_subunits
         denominator = self.config.merchant_catalog_points - 1
         for merchant_index, merchant_id in enumerate(self.merchants):
-            rng = random_stream(self.seed, "global", f"catalog-{merchant_index}")
+            rng = self._random_stream("global", f"catalog-{merchant_index}")
             step = max(1, span // denominator)
             values: list[int] = []
             for point in range(self.config.merchant_catalog_points):
@@ -140,8 +183,88 @@ class SimulationGenerator:
             raise ValueError("split_duration_too_short")
         return start + timedelta(milliseconds=rng.randrange(duration_ms))
 
+    def _campaign_windows(
+        self,
+        split: SplitConfig,
+        start: datetime,
+        end: datetime,
+    ) -> list[CampaignWindow]:
+        placement = split.campaign_placement
+        windows: list[CampaignWindow] = []
+        if placement is None:
+            for campaign_index in range(split.campaign_count):
+                rng = self._random_stream(
+                    split.name.value,
+                    f"campaign-window-{campaign_index}",
+                )
+                duration_ms = rng.randint(30, 90) * 60 * 1_000
+                windows.append(
+                    CampaignWindow(
+                        start=self._time(start, end, rng, margin_ms=duration_ms + 1),
+                        duration_ms=duration_ms,
+                    )
+                )
+            return windows
+
+        boundary = boundary_timestamp(
+            start,
+            end,
+            placement.protected_boundary_basis_points,
+        )
+        campaign_indices = list(range(split.campaign_count))
+        assignment_rng = self._random_stream(
+            split.name.value,
+            "campaign-placement-sides",
+        )
+        assignment_rng.shuffle(campaign_indices)
+        before_indices = frozenset(campaign_indices[: placement.minimum_campaigns_before_boundary])
+        gap = timedelta(seconds=placement.minimum_gap_seconds)
+        accepted: list[CampaignWindow] = []
+        by_index: dict[int, CampaignWindow] = {}
+        for campaign_index in range(split.campaign_count):
+            rng = self._random_stream(
+                split.name.value,
+                f"campaign-window-{campaign_index}",
+            )
+            duration_ms = rng.randint(30, 90) * 60 * 1_000
+            duration = timedelta(milliseconds=duration_ms)
+            if campaign_index in before_indices:
+                minimum_start = start
+                maximum_start = boundary - duration
+            else:
+                minimum_start = boundary
+                maximum_start = end - duration
+            available_ms = _timedelta_milliseconds(maximum_start - minimum_start)
+            if available_ms < 0:
+                raise ValueError("campaign_placement_infeasible")
+            selected: CampaignWindow | None = None
+            for _ in range(placement.maximum_sampling_attempts_per_campaign):
+                candidate = CampaignWindow(
+                    start=minimum_start + timedelta(milliseconds=rng.randrange(available_ms + 1)),
+                    duration_ms=duration_ms,
+                )
+                if all(
+                    candidate.end + gap <= existing.start or existing.end + gap <= candidate.start
+                    for existing in accepted
+                ):
+                    selected = candidate
+                    break
+            if selected is None:
+                raise ValueError("campaign_placement_infeasible")
+            accepted.append(selected)
+            by_index[campaign_index] = selected
+
+        ordered = sorted(accepted, key=lambda window: window.start)
+        gaps_ms = [
+            _timedelta_milliseconds(current.start - previous.end)
+            for previous, current in zip(ordered, ordered[1:], strict=False)
+        ]
+        if len(gaps_ms) > 1 and len(set(gaps_ms)) == 1:
+            raise ValueError("campaign_placement_must_be_irregular")
+        return [by_index[index] for index in range(split.campaign_count)]
+
     def _pool_token(self, prefix: str, kind: str, size: int, rng: Random) -> str:
-        return deterministic_identifier(prefix, self.seed, kind, rng.randrange(size))
+        return self._identifier(prefix, kind, rng.randrange(size))
 
     def _maybe_pool_token(
         self,
@@ -199,9 +322,7 @@ class SimulationGenerator:
         rng: Random,
     ) -> CheckoutAttemptEvent:
         return CheckoutAttemptEvent(
-            event_id=deterministic_identifier(
-                "evt", self.seed, "event", split.name.value, scenario, index
-            ),
+            event_id=self._identifier("evt", "event", split.name.value, scenario, index),
             merchant_id=merchant_id,
             occurred_at=occurred_at,
             checkout_id=checkout_id,
@@ -242,7 +363,7 @@ class SimulationGenerator:
         pools = self.config.entity_pools
         missing = self.config.missingness_rates
         return {
-            "checkout_id": deterministic_identifier("chk", self.seed, "checkout", scenario, index),
+            "checkout_id": self._identifier("chk", "checkout", scenario, index),
             "customer_token": self._maybe_pool_token(
                 "cus", "customer", pools.customers, missing.customer, rng
             ),
@@ -252,14 +373,14 @@ class SimulationGenerator:
             "network_token": self._maybe_pool_token(
                 "net", "network", pools.networks, missing.network, rng
             ),
-            "session_token": deterministic_identifier("ses", self.seed, "session", scenario, index),
+            "session_token": self._identifier("ses", "session", scenario, index),
             "instrument_token": self._pool_token("pmt", "instrument", pools.instruments, rng),
         }
 
     def _normal(
         self, split: SplitConfig, start: datetime, end: datetime, count: int
     ) -> list[GeneratedRecord]:
-        rng = random_stream(self.seed, split.name.value, "normal")
+        rng = self._random_stream(split.name.value, "normal")
         channels = self._channels(count, rng)
         outcomes = self._outcomes(count, self.config.outcome_rates.normal_failure, rng)
         records: list[GeneratedRecord] = []
@@ -287,7 +408,7 @@ class SimulationGenerator:
     def _retries(
         self, split: SplitConfig, start: datetime, end: datetime, count: int
     ) -> list[GeneratedRecord]:
-        rng = random_stream(self.seed, split.name.value, "legitimate-retry")
+        rng = self._random_stream(split.name.value, "legitimate-retry")
         bounds = self.config.retry_bounds
         group_sizes = _retry_group_sizes(
             count,
@@ -317,8 +438,8 @@ class SimulationGenerator:
         for chain_index, size in enumerate(group_sizes):
             merchant = self.merchants[rng.randrange(len(self.merchants))]
             scenario_key = f"{split.name.value}-retry-{chain_index}"
-            checkout = deterministic_identifier("chk", self.seed, "retry-checkout", scenario_key)
-            session = deterministic_identifier("ses", self.seed, "retry-session", scenario_key)
+            checkout = self._identifier("chk", "retry-checkout", scenario_key)
+            session = self._identifier("ses", "retry-session", scenario_key)
             customer = self._maybe_pool_token(
                 "cus",
                 "customer",
@@ -343,7 +464,7 @@ class SimulationGenerator:
             instrument = self._pool_token(
                 "pmt", "instrument", self.config.entity_pools.instruments, rng
             )
-            scenario_id = deterministic_identifier("scn", self.seed, "retry", scenario_key)
+            scenario_id = self._identifier("scn", "retry", scenario_key)
             maximum_chain_ms = bounds.maximum_gap_seconds * 1_000 * (size - 1)
             occurred = self._time(start, end, rng, margin_ms=maximum_chain_ms + 1)
             for attempt in range(size):
@@ -391,7 +512,7 @@ class SimulationGenerator:
     def _flash_sale(
         self, split: SplitConfig, start: datetime, end: datetime, count: int
     ) -> list[GeneratedRecord]:
-        rng = random_stream(self.seed, split.name.value, "flash-sale")
+        rng = self._random_stream(split.name.value, "flash-sale")
         window_count = min(3, max(1, count // 100))
         sizes = _split_into_groups(count, window_count)
         channels = self._channels(count, rng)
@@ -399,9 +520,7 @@ class SimulationGenerator:
         records: list[GeneratedRecord] = []
         event_index = 0
         for window_index, size in enumerate(sizes):
-            scenario_id = deterministic_identifier(
-                "scn", self.seed, "flash-sale", split.name.value, window_index
-            )
+            scenario_id = self._identifier("scn", "flash-sale", split.name.value, window_index)
             merchant = self.merchants[rng.randrange(len(self.merchants))]
             shared_network = self._pool_token(
                 "net", "network", self.config.entity_pools.networks, rng
@@ -436,7 +555,7 @@ class SimulationGenerator:
     def _shared_infrastructure(
         self, split: SplitConfig, start: datetime, end: datetime, count: int
     ) -> list[GeneratedRecord]:
-        rng = random_stream(self.seed, split.name.value, "shared-infrastructure")
+        rng = self._random_stream(split.name.value, "shared-infrastructure")
         group_count = min(3, max(1, count // 50))
         sizes = _split_into_groups(count, group_count)
         channels = self._channels(count, rng)
@@ -448,8 +567,8 @@ class SimulationGenerator:
         records: list[GeneratedRecord] = []
         event_index = 0
         for group_index, size in enumerate(sizes):
-            scenario_id = deterministic_identifier(
-                "scn", self.seed, "shared-infrastructure", split.name.value, group_index
+            scenario_id = self._identifier(
+                "scn", "shared-infrastructure", split.name.value, group_index
             )
             shared_network = self._pool_token(
                 "net", "network", self.config.entity_pools.networks, rng
@@ -491,7 +610,7 @@ class SimulationGenerator:
     def _legitimate_failures(
         self, split: SplitConfig, start: datetime, end: datetime, count: int
     ) -> list[GeneratedRecord]:
-        rng = random_stream(self.seed, split.name.value, "legitimate-failure")
+        rng = self._random_stream(split.name.value, "legitimate-failure")
         channels = self._channels(count, rng)
         failures = _allocate_weighted(count, self.config.failure_weights.model_dump(), rng)
         records: list[GeneratedRecord] = []
@@ -521,23 +640,26 @@ class SimulationGenerator:
     def _campaigns(
         self, split: SplitConfig, start: datetime, end: datetime, count: int
     ) -> list[GeneratedRecord]:
-        rng = random_stream(self.seed, split.name.value, "campaign")
+        rng = self._random_stream(split.name.value, "campaign")
         sizes = _split_into_groups(count, split.campaign_count)
+        windows = (
+            None
+            if self.config.config_schema_version == "1.0.0"
+            else self._campaign_windows(split, start, end)
+        )
         channels = self._channels(count, rng)
         outcomes = self._outcomes(count, self.config.outcome_rates.attack_failure, rng)
         records: list[GeneratedRecord] = []
         event_index = 0
         for campaign_index, size in enumerate(sizes):
-            campaign_id = deterministic_identifier(
-                "cmp", self.seed, "campaign", split.name.value, campaign_index
-            )
-            scenario_id = deterministic_identifier(
-                "scn", self.seed, "campaign-scenario", split.name.value, campaign_index
+            campaign_id = self._identifier("cmp", "campaign", split.name.value, campaign_index)
+            scenario_id = self._identifier(
+                "scn", "campaign-scenario", split.name.value, campaign_index
             )
             merchant_count = min(len(self.merchants), rng.randint(2, min(4, len(self.merchants))))
             campaign_merchants = rng.sample(self.merchants, merchant_count)
-            shared_network = deterministic_identifier(
-                "net", self.seed, "campaign-network", split.name.value, campaign_index
+            shared_network = self._identifier(
+                "net", "campaign-network", split.name.value, campaign_index
             )
             baseline_devices = max(1, (size + 11) // 12)
             device_count = (
@@ -546,9 +668,8 @@ class SimulationGenerator:
                 else baseline_devices
             )
             devices = [
-                deterministic_identifier(
+                self._identifier(
                     "dev",
-                    self.seed,
                     "campaign-device",
                     split.name.value,
                     campaign_index,
@@ -556,8 +677,13 @@ class SimulationGenerator:
                 )
                 for index in range(device_count)
             ]
-            duration_ms = rng.randint(30, 90) * 60 * 1_000
-            window_start = self._time(start, end, rng, margin_ms=duration_ms + 1)
+            if windows is None:
+                duration_ms = rng.randint(30, 90) * 60 * 1_000
+                window_start = self._time(start, end, rng, margin_ms=duration_ms + 1)
+            else:
+                window = windows[campaign_index]
+                duration_ms = window.duration_ms
+                window_start = window.start
             missing_device_count = (size * self.config.missingness_rates.device + 5_000) // 10_000
             missing_network_count = (size * self.config.missingness_rates.network + 5_000) // 10_000
             missing_device_indices = set(rng.sample(range(size), missing_device_count))
@@ -589,23 +715,21 @@ class SimulationGenerator:
                     index=event_index,
                     occurred_at=window_start + timedelta(milliseconds=rng.randrange(duration_ms)),
                     merchant_id=merchant,
-                    checkout_id=deterministic_identifier(
-                        "chk", self.seed, "campaign-checkout", split.name.value, event_index
+                    checkout_id=self._identifier(
+                        "chk", "campaign-checkout", split.name.value, event_index
                     ),
                     customer_token=customer,
                     device_token=device,
                     network_token=network,
-                    session_token=deterministic_identifier(
+                    session_token=self._identifier(
                         "ses",
-                        self.seed,
                         "campaign-session",
                         split.name.value,
                         campaign_index,
                         session_part,
                     ),
-                    instrument_token=deterministic_identifier(
+                    instrument_token=self._identifier(
                         "pmt",
-                        self.seed,
                         "campaign-instrument",
                         split.name.value,
                         event_index,

@@ -12,10 +12,17 @@ from pydantic import ValidationError
 from riskloom.simulation.artifacts import (
     build_manifest,
     canonical_json_bytes,
-    canonical_sha256,
     sha256_file,
+    simulation_dataset_id,
 )
-from riskloom.simulation.config import GENERATOR_VERSION, GeneratorConfig
+from riskloom.simulation.config import (
+    GeneratorConfig,
+    SplitConfig,
+    boundary_timestamp,
+    configuration_fingerprint,
+    generator_version_for_config,
+    validate_profile_contract,
+)
 from riskloom.simulation.event_schema import CheckoutAttemptEvent, Outcome
 from riskloom.simulation.generation import GeneratedRecord
 from riskloom.simulation.label_schema import GroundTruthLabel, ScenarioType, SplitName
@@ -114,6 +121,60 @@ def _split_boundaries(config: GeneratorConfig) -> dict[SplitName, tuple[datetime
         boundaries[split.name] = (start, end)
         start = end
     return boundaries
+
+
+def _timedelta_milliseconds(value: timedelta) -> int:
+    return value.days * 86_400_000 + value.seconds * 1_000 + value.microseconds // 1_000
+
+
+def _validate_campaign_placement(
+    campaign_groups: Mapping[str, Sequence[GeneratedRecord]],
+    split_start: datetime,
+    split_end: datetime,
+    split_config: SplitConfig,
+    attack_count: int,
+) -> None:
+    placement = split_config.campaign_placement
+    if placement is None:
+        return
+    if attack_count % split_config.campaign_count:
+        raise DatasetValidationError("campaign_placement_quota_not_equal")
+    expected_size = attack_count // split_config.campaign_count
+    boundary = boundary_timestamp(
+        split_start,
+        split_end,
+        placement.protected_boundary_basis_points,
+    )
+    before_count = 0
+    after_count = 0
+    envelopes: list[tuple[datetime, datetime]] = []
+    for group in campaign_groups.values():
+        timestamps = sorted(record.event.occurred_at for record in group)
+        if len(timestamps) != expected_size:
+            raise DatasetValidationError("campaign_placement_quota_not_equal")
+        first = timestamps[0]
+        last = timestamps[-1]
+        if last < boundary:
+            before_count += 1
+        elif first >= boundary:
+            after_count += 1
+        else:
+            raise DatasetValidationError("campaign_crosses_protected_boundary")
+        envelopes.append((first, last))
+    if before_count < placement.minimum_campaigns_before_boundary:
+        raise DatasetValidationError("campaigns_before_boundary_missing")
+    if after_count < placement.minimum_campaigns_after_boundary:
+        raise DatasetValidationError("campaigns_after_boundary_missing")
+    ordered = sorted(envelopes)
+    gaps_ms = [
+        _timedelta_milliseconds(current[0] - previous[1])
+        for previous, current in zip(ordered, ordered[1:], strict=False)
+    ]
+    minimum_gap_ms = placement.minimum_gap_seconds * 1_000
+    if any(gap < minimum_gap_ms for gap in gaps_ms):
+        raise DatasetValidationError("campaign_placement_gap_invalid")
+    if len(gaps_ms) > 1 and len(set(gaps_ms)) == 1:
+        raise DatasetValidationError("campaign_placement_not_irregular")
 
 
 def validate_records(records: Sequence[GeneratedRecord], config: GeneratorConfig) -> None:
@@ -230,6 +291,14 @@ def validate_records(records: Sequence[GeneratedRecord], config: GeneratorConfig
             }
             if None in scenario_ids or len(scenario_ids) != 1:
                 raise DatasetValidationError("campaign_scenario_identity_mismatch")
+        split_start, split_end = boundaries[split.name]
+        _validate_campaign_placement(
+            campaign_groups,
+            split_start,
+            split_end,
+            split,
+            config.scenario_counts(split)["attack"],
+        )
 
     policy = config.controlled_test_shift
     test_attacks = split_attacks[SplitName.TEST]
@@ -358,18 +427,30 @@ def validate_dataset_directory(directory: Path) -> dict[str, Any]:
             raise ValueError("invalid seed")
         seed = seed_value
         config = GeneratorConfig.model_validate(manifest["effective_configuration"])
+        validate_profile_contract(config)
+        generator_version = manifest["generator_version"]
+        if not isinstance(generator_version, str):
+            raise ValueError("invalid generator version")
+        declared_config_version = manifest["config_schema_version"]
+        if not isinstance(declared_config_version, str):
+            raise ValueError("invalid configuration version")
         dataset_id = manifest["dataset_id"]
         if not isinstance(dataset_id, str) or re.fullmatch(r"[0-9a-f]{64}", dataset_id) is None:
             raise ValueError("invalid dataset id")
     except (KeyError, TypeError, ValueError, ValidationError):
         raise DatasetValidationError("manifest_schema_invalid") from None
-    expected_dataset_id = canonical_sha256(
-        {
-            "effective_configuration": config.model_dump(mode="json"),
-            "generator_version": GENERATOR_VERSION,
-            "seed": seed,
-        }
-    )
+    if (
+        declared_config_version != config.config_schema_version
+        or generator_version != generator_version_for_config(config)
+    ):
+        raise DatasetValidationError("generator_configuration_version_mismatch")
+    expected_fingerprint = configuration_fingerprint(config)
+    if (
+        expected_fingerprint is not None
+        and manifest.get("effective_configuration_sha256") != expected_fingerprint
+    ):
+        raise DatasetValidationError("configuration_fingerprint_mismatch")
+    expected_dataset_id = simulation_dataset_id(config, seed)
     if dataset_id != expected_dataset_id:
         raise DatasetValidationError("dataset_identity_mismatch")
     validate_records(records, config)

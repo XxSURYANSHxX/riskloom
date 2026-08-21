@@ -9,7 +9,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from riskloom.simulation.config import GENERATOR_VERSION, GeneratorConfig
+from riskloom.simulation.config import (
+    GeneratorConfig,
+    configuration_fingerprint,
+    effective_configuration,
+    generator_version_for_config,
+    validated_configuration_snapshot,
+)
 from riskloom.simulation.event_schema import CheckoutAttemptEvent
 from riskloom.simulation.generation import GeneratedRecord, generate_records
 from riskloom.simulation.label_schema import GroundTruthLabel
@@ -166,19 +172,35 @@ def build_manifest(
     dataset_id: str,
     artifacts: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
-    return {
+    fingerprint = configuration_fingerprint(config)
+    manifest = {
         "artifact_type": "synthetic_checkout_simulation",
         "artifacts": {key: dict(artifacts[key]) for key in sorted(artifacts)},
         "config_schema_version": config.config_schema_version,
         "dataset_id": dataset_id,
-        "effective_configuration": config.model_dump(mode="json"),
+        "effective_configuration": effective_configuration(config),
         "event_schema_version": "1.0.0",
-        "generator_version": GENERATOR_VERSION,
+        "generator_version": generator_version_for_config(config),
         "label_schema_version": "1.0.0",
         "product": "RiskLoom",
         "seed": seed,
         "splits": _split_manifest(config),
     }
+    if fingerprint is not None:
+        manifest["effective_configuration_sha256"] = fingerprint
+    return manifest
+
+
+def simulation_dataset_id(config: GeneratorConfig, seed: int) -> str:
+    identity_material: dict[str, Any] = {
+        "effective_configuration": effective_configuration(config),
+        "generator_version": generator_version_for_config(config),
+        "seed": seed,
+    }
+    fingerprint = configuration_fingerprint(config)
+    if fingerprint is not None:
+        identity_material["effective_configuration_sha256"] = fingerprint
+    return canonical_sha256(identity_material)
 
 
 def _write_staged_dataset(
@@ -187,13 +209,7 @@ def _write_staged_dataset(
     config: GeneratorConfig,
     seed: int,
 ) -> tuple[str, dict[str, str]]:
-    effective_configuration = config.model_dump(mode="json")
-    identity_material = {
-        "effective_configuration": effective_configuration,
-        "generator_version": GENERATOR_VERSION,
-        "seed": seed,
-    }
-    dataset_id = canonical_sha256(identity_material)
+    dataset_id = simulation_dataset_id(config, seed)
     write_event_jsonl(staging / "events.jsonl", (record.event for record in records))
     _write_label_jsonl(staging / "labels.jsonl", (record.label for record in records))
     write_canonical_json(staging / "report.json", build_report(records, dataset_id, config))
@@ -216,6 +232,7 @@ def generate_dataset(
 ) -> GenerationResult:
     from riskloom.simulation.validation import validate_dataset_directory
 
+    validated_config = validated_configuration_snapshot(config)
     output = _safe_output_path(output_directory)
     existing_output = _validate_existing_output(output, overwrite)
     if existing_output:
@@ -229,8 +246,13 @@ def generate_dataset(
     except OSError:
         raise ArtifactPublishError("artifact_staging_failed") from None
     try:
-        records = generate_records(config, seed)
-        dataset_id, hashes = _write_staged_dataset(staging, records, config, seed)
+        records = generate_records(validated_config, seed)
+        dataset_id, hashes = _write_staged_dataset(
+            staging,
+            records,
+            validated_config,
+            seed,
+        )
         validate_dataset_directory(staging)
         output.mkdir(parents=False, exist_ok=True)
         for filename in ARTIFACT_FILENAMES:
