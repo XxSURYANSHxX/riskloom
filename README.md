@@ -269,11 +269,21 @@ held-out features only for sklearn/portable inference parity. Training reports c
 train, calibration-fit, and policy-selection results only—never raw identifiers, predictions,
 held-out counts, or held-out metrics.
 
-The `evaluate-test` command exists for a later, separately approved gate. It performs portable
-inference against an already locked model and has no fit path. Do not run it on the official
-development partition before that approval. Generated model and evaluation directories are ignored
-by Git, publication is manifest-last with no overwrite option, and a non-empty destination is
-always refused.
+The `evaluate-test` command performs portable inference against an already locked model and has no
+fit path. The official development held-out evaluation has now been run exactly once against the
+locked `development` model. Over 17,000 held-out events at 2.0% attack prevalence, it reaches 97.6%
+recall and 76.9% precision at the locked threshold, with average precision 0.964. All three
+held-out campaigns were detected; that is a 3-of-3 denominator on a single synthetic split, not a
+general campaign-detection claim.
+
+Known limitation: two legitimate traffic patterns account for 90% of all false positives —
+`shared_infrastructure` (6.9% false-positive rate) and `legitimate_retry` (2.3%) — and the model is
+overconfident in the mid probability range, where the 0.4-0.8 reliability bins predict far higher
+risk than the observed attack rate in them. These figures describe synthetic data only and are not
+production accuracy or merchant-loss claims.
+
+Generated model and evaluation directories are ignored by Git, publication is manifest-last with no
+overwrite option, and a non-empty destination is always refused.
 
 Byte determinism is guaranteed only for the same Python, NumPy, scikit-learn and dependency-lock
 versions, exact source bytes, effective configuration, operating system, CPU/numerical environment,
