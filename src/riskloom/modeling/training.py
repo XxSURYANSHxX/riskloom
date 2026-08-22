@@ -29,7 +29,9 @@ from riskloom.modeling.model import (
     export_platt,
     fit_candidates,
     parity_result,
+    portable_probabilities,
 )
+from riskloom.policy.bands import boundary_diagnostics
 
 
 class ModelingTrainingError(ValueError):
@@ -274,6 +276,52 @@ def build_training_outputs(data: TrainingData, config: ModelingConfig) -> Traini
     return TrainingOutputs(model=model, report=report, winner=winner)
 
 
+DECISION_BOUNDARY_NOTE = (
+    "The locked decision threshold is compared against the calibrated probabilities that portable"
+    " JSON inference actually produces. When the threshold is not itself one of those observed"
+    " values, every row in the nearest tie cluster below it sits on the allow side, and any"
+    " implementation whose rounding differs by less than the probability-parity tolerance can"
+    " still disagree about the discrete decision for all of those rows at once. Probability parity"
+    " passing therefore does not imply decision parity. This is reported for visibility on future"
+    " re-locks and retraining runs; it is a diagnostic, never a pass or fail condition."
+)
+
+
+def decision_boundary_diagnostic(model: LockedModel, data: TrainingData) -> dict[str, Any]:
+    """Report how fragile the locked threshold is against portable inference.
+
+    Reported for ``policy_selection`` because that is the partition the threshold was selected on,
+    so it is where a tie-cluster landing has any bearing on the recorded confusion matrix. This is
+    purely additive: it computes no verdict, raises nothing of its own, and cannot change whether
+    ``validate-model`` succeeds.
+    """
+
+    partition = data.policy_selection
+    probabilities = portable_probabilities(model, partition.features)
+    diagnostics = boundary_diagnostics(probabilities, model.decision_threshold)
+    nearest = diagnostics["nearest_observed_value_below_threshold"]
+    if nearest is None:
+        tied_attack = 0
+        tied_legitimate = 0
+    else:
+        tied = probabilities == nearest
+        tied_attack = int(np.count_nonzero(tied & (partition.targets == 1)))
+        tied_legitimate = int(np.count_nonzero(tied & (partition.targets == 0)))
+    return {
+        "decision_threshold": model.decision_threshold,
+        "distinct_probability_count": diagnostics["distinct_probability_count"],
+        "nearest_observed_probability_below_threshold": nearest,
+        "note": DECISION_BOUNDARY_NOTE,
+        "partition": "policy_selection",
+        "rows_tied_at_that_value": {
+            "attack": tied_attack,
+            "legitimate": tied_legitimate,
+            "total": diagnostics["tied_rows_at_nearest_value_below_threshold"],
+        },
+        "threshold_is_an_observed_value": diagnostics["threshold_is_an_observed_value"],
+    }
+
+
 def train_model(
     simulation_directory: Path,
     feature_directory: Path,
@@ -343,4 +391,9 @@ def validate_model(
             config.parity_absolute_tolerance,
         ),
     }
-    return {"model_id": locked_model.model_id, "parity": parity, "status": "valid"}
+    return {
+        "decision_boundary": decision_boundary_diagnostic(locked_model, loaded.training),
+        "model_id": locked_model.model_id,
+        "parity": parity,
+        "status": "valid",
+    }

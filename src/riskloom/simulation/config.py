@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, Self
 
@@ -22,6 +22,26 @@ SMOKE_MAX_DURATION_DAYS_PER_SPLIT = 4
 SMOKE_MAX_CAMPAIGNS_PER_SPLIT = 10
 SMOKE_MAX_PLACEMENT_CAMPAIGNS_PER_SIDE = 5
 SMOKE_MAX_PLACEMENT_SAMPLING_ATTEMPTS = 4_096
+
+# Locked contract for the Day 5 counterfactual policy-validation batch. This profile exists only to
+# produce a small, chronologically disjoint dataset that no Day 4 fitting partition has ever seen.
+# It is deliberately NOT "development" so it can never be substituted for the approved training or
+# held-out data, and every value below is pinned so the batch cannot be quietly reshaped.
+POLICY_VALIDATION_START_AT = "2026-03-01T00:00:00Z"
+POLICY_VALIDATION_TRAIN_DURATION_DAYS = 5
+POLICY_VALIDATION_TRAIN_EVENT_COUNT = 5_000
+POLICY_VALIDATION_TRAIN_CAMPAIGN_COUNT = 5
+POLICY_VALIDATION_CALIBRATION_DURATION_DAYS = 3
+POLICY_VALIDATION_CALIBRATION_EVENT_COUNT = 2_000
+POLICY_VALIDATION_CALIBRATION_CAMPAIGN_COUNT = 4
+POLICY_VALIDATION_TEST_DURATION_DAYS = 3
+POLICY_VALIDATION_TEST_EVENT_COUNT = 2_000
+POLICY_VALIDATION_TEST_CAMPAIGN_COUNT = 2
+POLICY_VALIDATION_BOUNDARY_BASIS_POINTS = 5_000
+POLICY_VALIDATION_CAMPAIGNS_PER_SIDE = 2
+POLICY_VALIDATION_MINIMUM_GAP_SECONDS = 300
+POLICY_VALIDATION_SAMPLING_ATTEMPTS = 4_096
+POLICY_VALIDATION_TOTAL_EVENTS = 9_000
 
 
 class ScenarioWeights(BaseModel):
@@ -158,7 +178,7 @@ class GeneratorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     config_schema_version: Literal["1.0.0", "1.1.0"]
-    dataset_profile: Literal["smoke", "development"]
+    dataset_profile: Literal["smoke", "development", "policy-validation"]
     start_at: datetime
     currency: str = Field(pattern=r"^[A-Z]{3}$")
     merchant_count: int = Field(ge=2, le=10_000)
@@ -319,6 +339,71 @@ class GeneratorConfig(BaseModel):
             if not valid:
                 raise ValueError(error)
 
+    def _validate_locked_policy_validation_contract(self) -> None:
+        train, calibration, test = self.splits
+        placement = calibration.campaign_placement
+        checks = (
+            (
+                self.start_at == datetime(2026, 3, 1, tzinfo=UTC),
+                "policy_validation_contract_start_at",
+            ),
+            (train.duration_days == 5, "policy_validation_contract_train_duration"),
+            (train.event_count == 5_000, "policy_validation_contract_train_event_count"),
+            (train.campaign_count == 5, "policy_validation_contract_train_campaign_count"),
+            (
+                train.campaign_profile is CampaignProfile.BASELINE_REUSE,
+                "policy_validation_contract_train_campaign_profile",
+            ),
+            (calibration.duration_days == 3, "policy_validation_contract_calibration_duration"),
+            (
+                calibration.event_count == 2_000,
+                "policy_validation_contract_calibration_event_count",
+            ),
+            (
+                calibration.campaign_count == 4,
+                "policy_validation_contract_calibration_campaign_count",
+            ),
+            (
+                calibration.campaign_profile is CampaignProfile.BASELINE_REUSE,
+                "policy_validation_contract_calibration_campaign_profile",
+            ),
+            (placement is not None, "policy_validation_contract_calibration_placement"),
+            (
+                placement is not None and placement.protected_boundary_basis_points == 5_000,
+                "policy_validation_contract_boundary",
+            ),
+            (
+                placement is not None and placement.minimum_campaigns_before_boundary == 2,
+                "policy_validation_contract_campaigns_before",
+            ),
+            (
+                placement is not None and placement.minimum_campaigns_after_boundary == 2,
+                "policy_validation_contract_campaigns_after",
+            ),
+            (
+                placement is not None and placement.minimum_gap_seconds == 300,
+                "policy_validation_contract_campaign_gap",
+            ),
+            (
+                placement is not None and placement.maximum_sampling_attempts_per_campaign == 4_096,
+                "policy_validation_contract_sampling_attempts",
+            ),
+            (test.duration_days == 3, "policy_validation_contract_test_duration"),
+            (test.event_count == 2_000, "policy_validation_contract_test_event_count"),
+            (test.campaign_count == 2, "policy_validation_contract_test_campaign_count"),
+            (
+                test.campaign_profile is CampaignProfile.ENTITY_REUSE_SHIFT,
+                "policy_validation_contract_test_campaign_profile",
+            ),
+            (
+                self.total_events == POLICY_VALIDATION_TOTAL_EVENTS,
+                "policy_validation_contract_total_event_count",
+            ),
+        )
+        for valid, error in checks:
+            if not valid:
+                raise ValueError(error)
+
     @property
     def total_events(self) -> int:
         return sum(split.event_count for split in self.splits)
@@ -337,7 +422,7 @@ def validate_profile_contract(config: GeneratorConfig) -> None:
     profile = config.dataset_profile
     if version not in ("1.0.0", "1.1.0"):
         raise ValueError("unsupported_configuration_version")
-    if profile not in ("development", "smoke"):
+    if profile not in ("development", "smoke", "policy-validation"):
         raise ValueError("unsupported_dataset_profile")
     if len(config.splits) != 3:
         raise ValueError("profile_contract_split_structure_invalid")
@@ -357,6 +442,9 @@ def validate_profile_contract(config: GeneratorConfig) -> None:
         raise ValueError("configuration schema 1.1.0 requires calibration placement only")
     if profile == "development":
         config._validate_locked_development_contract()
+        return
+    if profile == "policy-validation":
+        config._validate_locked_policy_validation_contract()
         return
     if profile != "smoke":
         raise ValueError("unsupported_version_profile_combination")

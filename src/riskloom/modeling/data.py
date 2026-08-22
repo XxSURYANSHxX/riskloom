@@ -13,7 +13,7 @@ from riskloom.modeling.canonical import (
     parse_canonical_jsonl_row,
     read_canonical_json,
 )
-from riskloom.modeling.config import ModelingConfig
+from riskloom.modeling.config import ModelingConfig, SourceContract
 from riskloom.simulation.config import (
     GeneratorConfig,
     boundary_timestamp,
@@ -63,6 +63,21 @@ class TrainingData:
 class ValidationData:
     training: TrainingData
     held_out_feature_sample: np.ndarray
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyValidationData:
+    """A fresh counterfactual batch that no Day 4 fitting partition has ever seen."""
+
+    features: np.ndarray
+    targets: np.ndarray
+    row_count: int
+    simulation_dataset_id: str
+    feature_dataset_id: str
+    events_sha256: str
+    labels_sha256: str
+    features_sha256: str
+    configuration_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -477,4 +492,148 @@ def load_evaluation_data(
         scenarios=tuple(scenarios),
         campaign_ids=tuple(campaigns),
         occurred_at_ms=np.asarray(occurred_at_ms, dtype=np.int64),
+    )
+
+
+def load_policy_validation_data(
+    simulation_directory: Path, feature_directory: Path, contract: SourceContract
+) -> PolicyValidationData:
+    """Load a policy-validation batch and prove it is not the approved development data.
+
+    The Day 4 loaders pin exact hashes because they read the one approved dataset. This loader is
+    the mirror image: it refuses anything whose identity matches the locked development contract,
+    so a counterfactual validation can never silently run against data the band was fitted on, or
+    against the Gate B2 held-out partition.
+    """
+
+    simulation_manifest = read_canonical_json(simulation_directory / "manifest.json")
+    feature_manifest = read_canonical_json(feature_directory / "manifest.json")
+
+    markers = (
+        (simulation_manifest.get("product") == "RiskLoom", "product"),
+        (feature_manifest.get("product") == "RiskLoom", "product"),
+        (
+            simulation_manifest.get("artifact_type") == "synthetic_checkout_simulation",
+            "simulation_artifact_type",
+        ),
+        (
+            feature_manifest.get("artifact_type") == "temporal_coordination_features",
+            "feature_artifact_type",
+        ),
+        (simulation_manifest.get("config_schema_version") == "1.1.0", "config_schema_version"),
+        (
+            feature_manifest.get("feature_schema_version") == contract.feature_schema_version,
+            "feature_schema_version",
+        ),
+        (feature_manifest.get("feature_count") == contract.feature_count, "feature_count"),
+    )
+    for valid, name in markers:
+        if not valid:
+            raise ModelingDataError(f"policy_validation_{name}_invalid")
+
+    try:
+        effective = simulation_manifest["effective_configuration"]
+        generator_config = GeneratorConfig.model_validate(effective)
+        validate_profile_contract(generator_config)
+    except (KeyError, TypeError, ValidationError, ValueError):
+        raise ModelingDataError("policy_validation_configuration_invalid") from None
+    if generator_config.dataset_profile != "policy-validation":
+        raise ModelingDataError("policy_validation_requires_policy_validation_profile")
+    fingerprint = str(configuration_fingerprint(generator_config))
+    if fingerprint != simulation_manifest.get("effective_configuration_sha256"):
+        raise ModelingDataError("policy_validation_configuration_fingerprint_mismatch")
+
+    simulation_artifacts = simulation_manifest.get("artifacts")
+    feature_artifacts = feature_manifest.get("artifacts")
+    source_events = feature_manifest.get("source_events")
+    if (
+        not isinstance(simulation_artifacts, dict)
+        or not isinstance(feature_artifacts, dict)
+        or not isinstance(source_events, dict)
+    ):
+        raise ModelingDataError("policy_validation_artifact_metadata_invalid")
+
+    def declared(artifacts: dict[str, object], name: str) -> str:
+        entry = artifacts.get(name)
+        if not isinstance(entry, dict) or not isinstance(entry.get("sha256"), str):
+            raise ModelingDataError("policy_validation_artifact_metadata_invalid")
+        return str(entry["sha256"])
+
+    labels_path = simulation_directory / "labels.jsonl"
+    features_path = feature_directory / "features.jsonl"
+    events_sha256 = declared(simulation_artifacts, "events.jsonl")
+    labels_sha256 = declared(simulation_artifacts, "labels.jsonl")
+    features_sha256 = declared(feature_artifacts, "features.jsonl")
+    if source_events.get("sha256") != events_sha256:
+        raise ModelingDataError("policy_validation_feature_source_mismatch")
+    _expect_hash(labels_path, labels_sha256)
+    _expect_hash(features_path, features_sha256)
+
+    simulation_dataset_id = str(simulation_manifest.get("dataset_id"))
+    feature_dataset_id = str(feature_manifest.get("feature_dataset_id"))
+    # The disjointness proof: every identity naming the approved development data must differ.
+    forbidden = (
+        (simulation_dataset_id, contract.simulation_dataset_id, "simulation_dataset_id"),
+        (feature_dataset_id, contract.feature_dataset_id, "feature_dataset_id"),
+        (events_sha256, contract.events_sha256, "events_sha256"),
+        (labels_sha256, contract.labels_sha256, "labels_sha256"),
+        (features_sha256, contract.features_sha256, "features_sha256"),
+        (fingerprint, contract.simulation_configuration_sha256, "configuration_sha256"),
+    )
+    for observed, locked, name in forbidden:
+        if observed == locked:
+            raise ModelingDataError(f"policy_validation_reuses_development_{name}")
+
+    features: list[list[int]] = []
+    targets: list[int] = []
+    seen_event_ids: set[str] = set()
+    previous_key: tuple[datetime, str] | None = None
+    row_count = 0
+    try:
+        with features_path.open("rb") as feature_stream, labels_path.open("rb") as label_stream:
+            while True:
+                feature_raw = feature_stream.readline()
+                label_raw = label_stream.readline()
+                if not feature_raw and not label_raw:
+                    break
+                if not feature_raw or not label_raw:
+                    raise ModelingDataError("modeling_source_early_eof")
+                row_count += 1
+                feature_value = parse_canonical_jsonl_row(feature_raw)
+                label_value = parse_canonical_jsonl_row(label_raw)
+                _, occurred_text = _validate_join_metadata(feature_value, label_value)
+                event_id = str(feature_value["event_id"])
+                if event_id in seen_event_ids:
+                    raise ModelingDataError("modeling_duplicate_event_id")
+                seen_event_ids.add(event_id)
+                ordering_key = (_parse_timestamp(occurred_text), event_id)
+                if previous_key is not None and ordering_key <= previous_key:
+                    raise ModelingDataError("modeling_source_order_invalid")
+                previous_key = ordering_key
+                feature, label = _parse_training_row(feature_value, label_value)
+                values = feature.features.model_dump()
+                features.append([values[name] for name in FEATURE_NAMES])
+                targets.append(int(label.is_attack))
+    except OSError:
+        raise ModelingDataError("policy_validation_source_read_failed") from None
+    except ModelingArtifactError as error:
+        raise ModelingDataError(str(error)) from None
+
+    if row_count == 0 or set(targets) != {0, 1}:
+        raise ModelingDataError("policy_validation_class_count_invalid")
+    if file_metadata(labels_path)["sha256"] != labels_sha256:
+        raise ModelingDataError("policy_validation_labels_changed_during_load")
+    if file_metadata(features_path)["sha256"] != features_sha256:
+        raise ModelingDataError("policy_validation_features_changed_during_load")
+
+    return PolicyValidationData(
+        features=np.asarray(features, dtype=np.float64),
+        targets=np.asarray(targets, dtype=np.int8),
+        row_count=row_count,
+        simulation_dataset_id=simulation_dataset_id,
+        feature_dataset_id=feature_dataset_id,
+        events_sha256=events_sha256,
+        labels_sha256=labels_sha256,
+        features_sha256=features_sha256,
+        configuration_sha256=fingerprint,
     )

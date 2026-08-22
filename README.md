@@ -290,6 +290,101 @@ versions, exact source bytes, effective configuration, operating system, CPU/num
 and fixed seeds. It is not claimed across CPU architectures, BLAS implementations, platforms, or
 dependency versions.
 
+### Decision-boundary diagnostic
+
+Parity between the fitted estimator and the portable JSON model is checked on probabilities, within
+`parity_absolute_tolerance`. That does not guarantee the two agree on the discrete decision. A
+gradient-boosting model with shallow trees can legitimately produce very few distinct calibrated
+probabilities on a skewed feature set -- the locked development model produces 15 distinct values
+across 7,952 `policy_selection` rows -- so probabilities arrive in large ties, and a threshold that
+lands on a tie-cluster boundary can flip every row in that cluster at once on a difference far
+smaller than the tolerance.
+
+The locked development threshold sits one unit in the last place above a cluster of eight
+`policy_selection` rows (one attack, seven legitimate). Portable inference allows those eight rows,
+while `training_report.json` recorded them as denied, so that report's `policy_selection` confusion
+matrix and portable-model behaviour differ by those eight rows.
+
+This is an internal-consistency gap only. **No published held-out evaluation number is affected.**
+Every figure in the Day 4 section above was computed through portable inference on the held-out
+partition and correctly describes deployed behaviour.
+
+Rather than retroactively re-locking an already-accepted and already-published artifact, the
+condition is now monitored. `validate-model` reports a non-fatal `decision_boundary` block naming
+whether the threshold is an observed probability, the nearest observed value below it, and the
+attack and legitimate row counts tied there. It is a diagnostic, never a pass or fail gate, and it
+exists so any future re-lock or retraining run surfaces the same condition before it is accepted.
+
+## Day 5 cost-aware policy band
+
+The isolated `riskloom.policy` package replaces Day 4's single ALLOW/DENY threshold with a
+three-tier ALLOW / REVIEW / DENY band. It never imports the simulation label module, directly or
+transitively, and its routing function takes a calibrated probability and a band, nothing else.
+Label-bearing orchestration lives in `riskloom.modeling.policy_ops`, where labels only ever score a
+decision that has already been made.
+
+Total cost extends the Day 4 function rather than replacing it:
+
+```
+total_cost = FN * false_negative_cost_units    (25, inherited and unchanged)
+           + FP * false_positive_cost_units    (1,  inherited and unchanged)
+           + N_review * review_cost_units      (3,  new abstract policy weight)
+```
+
+`N_review` counts every reviewed event regardless of its true label, because review is an
+operational cost incurred whether or not the transaction turns out to be fraud. All three weights
+are abstract units and none is a rupee-denominated claim. Both thresholds are fitted on
+`policy_selection` by a deterministic sweep over observed probabilities that always includes the
+incumbent threshold, so the band can always express the existing policy exactly.
+
+Counterfactual validation uses a separate `policy-validation` profile with its own locked contract,
+a seed used by no prior gate, and a window running 2026-03-01 to 2026-03-12 -- entirely after the
+development window that ends 2026-01-31. The loader refuses any batch whose dataset ids, artifact
+hashes, or configuration fingerprint match the locked development contract.
+
+```powershell
+uv run python -m riskloom.simulation generate `
+  --config configs/simulation/policy-validation.json `
+  --seed 20260905 `
+  --output-dir artifacts/simulations/policy-validation
+
+uv run python -m riskloom.features extract `
+  --events artifacts/simulations/policy-validation/events.jsonl `
+  --config configs/features/default.json `
+  --output-dir artifacts/features/policy-validation
+
+uv run python -m riskloom.modeling fit-policy-band `
+  --simulation-dir artifacts/simulations/development-v1.1.0-config-bound-a `
+  --feature-dir artifacts/features/development-v1.1.0-config-bound `
+  --config configs/modeling/default.json `
+  --model-dir artifacts/models/development `
+  --policy-config configs/policy/default.json `
+  --output-dir artifacts/policy/bands/development
+
+uv run python -m riskloom.modeling validate-policy `
+  --band-dir artifacts/policy/bands/development `
+  --validation-simulation-dir artifacts/simulations/policy-validation `
+  --validation-feature-dir artifacts/features/policy-validation `
+  --config configs/modeling/default.json `
+  --model-dir artifacts/models/development `
+  --policy-config configs/policy/default.json `
+  --output-dir artifacts/policy/comparisons/development
+```
+
+The banded policy never auto-activates. Approval requires the explicit `--approve` flag and is
+refused whenever the band fails to beat the incumbent cost, exceeds the configured
+false-positive-rate ceiling (default 100 basis points, configurable per merchant), or the
+validation batch falls below the configured minimum of 2,000 rows and 100 attacks.
+
+On the current fresh validation batch the fitted band beat the incumbent on cost -- 741 against 763
+abstract units across 9,000 events -- but was refused approval because its false-positive rate of
+132 basis points exceeds the 100 basis point ceiling. The incumbent policy also exceeds that
+ceiling on the same batch, at 128 basis points. The fitted band additionally has an empty review
+tier: with a false positive costing 1 unit and a review costing 3, denying is always cheaper than
+reviewing, so a review tier can never be cost-optimal at these inherited weights. Making the review
+tier reachable would require rescaling the cost units, which is a deliberate future decision rather
+than something this gate tunes for.
+
 ## Prerequisites
 
 - Python 3.11

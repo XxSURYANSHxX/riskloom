@@ -1,0 +1,1 @@
+{"config_schema_version":"1.0.0","false_negative_cost_units":250,"false_positive_cost_units":10,"maximum_false_positive_rate_basis_points":100,"minimum_validation_attacks":100,"minimum_validation_rows":2000,"review_cost_units":3,"threshold_grid_size":512}

@@ -38,6 +38,61 @@ These instructions apply to the entire repository.
 - Valid unsupported events are audited as ignored. Retryable processing failures must roll back and
   return non-2xx.
 
+## Decision-boundary invariants
+
+- Probability parity does not imply decision parity. The modeling parity gate compares calibrated
+  probabilities within `parity_absolute_tolerance`; a difference far below that tolerance can still
+  flip the discrete allow/deny decision for every row whose probability ties exactly at the
+  threshold. Never treat a passing parity check as evidence that two implementations agree on
+  decisions.
+- A gradient-boosting model with shallow trees can legitimately produce very few distinct
+  calibrated probabilities on a skewed feature set. The locked Day 4 model produces 15 distinct
+  values across 7,952 `policy_selection` rows, so probabilities arrive in large ties and a
+  threshold landing on a tie-cluster boundary is a recurring structural risk, not a one-off fluke.
+- The locked Day 4 threshold sits one unit in the last place above a tie cluster of eight
+  `policy_selection` rows (one attack, seven legitimate). Portable JSON inference therefore allows
+  those eight rows, while `training_report.json` recorded them as denied. This is an internal
+  consistency gap between that report and portable-model behaviour on `policy_selection` only. No
+  published held-out evaluation number is affected: Gate B2 computed every figure through portable
+  inference, so those numbers correctly describe deployed behaviour.
+- The Day 4 artifact is not retroactively re-locked for this. The condition is instead monitored:
+  `validate-model` reports a non-fatal `decision_boundary` diagnostic naming whether the threshold
+  is an observed probability, the nearest observed value below it, and how many attack and
+  legitimate rows tie there. It is a diagnostic and must never become a pass or fail gate against
+  the already-accepted model.
+- When a future re-lock or retraining run selects a threshold, prefer a value strictly between two
+  adjacent observed probabilities over one landing exactly on an observed value, and check the
+  diagnostic before accepting the result.
+
+## Cost-aware policy invariants
+
+- Keep `riskloom.policy` isolated from ground-truth labels. It must not import the simulation label
+  module directly or transitively, and no policy source may name `scenario_type`, `campaign_id`,
+  `is_attack`, `split`, or `generator_metadata`. Routing inputs are the locked model's calibrated
+  probability and, where needed, the same 75 causal features available at inference time.
+- Keep label-bearing orchestration in `riskloom.modeling.policy_ops`. Labels may score a decision
+  that has already been made; they may never be an input to making one.
+- Fit both band thresholds on `policy_selection` only. That partition's Day 4 role was already
+  decision-rule selection, so choosing two thresholds is an extension of that role, not new
+  leakage. Never fit against held-out or counterfactual-validation rows.
+- Total cost is `FN * false_negative_cost_units + FP * false_positive_cost_units +
+  N_review * review_cost_units`. Inherit 25 and 1 unchanged from the locked Day 4 configuration so
+  both policies are scored identically. `review_cost_units` is an abstract operational weight
+  charged for every reviewed event regardless of its true label; it is a policy choice, never a
+  currency claim. A reviewed event is neither a false positive nor a false negative.
+- Sweep both thresholds deterministically over observed probabilities, always including the
+  incumbent threshold as a candidate. Apply the extended tie-break ladder: cost, false positive,
+  true positive, review count, upper threshold, lower threshold, then stable candidate index.
+  Precision is deliberately absent because it is determined by true positive and false positive.
+- Validate counterfactually on a `policy-validation` profile batch generated with a fresh seed and
+  a chronologically disjoint window. Refuse any batch whose dataset ids, artifact hashes, or
+  configuration fingerprint match the locked development contract.
+- Never auto-activate a policy. Approval requires an explicit human flag and is refused whenever
+  the banded policy fails to beat the incumbent cost, exceeds the configured false-positive-rate
+  ceiling, or the validation batch is below the configured minimum rows and attacks. Publish the
+  comparison honestly whether the policy wins or loses.
+- Generated policy artifacts belong under ignored `artifacts/policy/` and must not be committed.
+
 ## Quality gates
 
 - Add or update unit and PostgreSQL integration tests for every behavior change.
