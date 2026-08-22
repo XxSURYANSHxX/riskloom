@@ -385,6 +385,78 @@ reviewing, so a review tier can never be cost-optimal at these inherited weights
 tier reachable would require rescaling the cost units, which is a deliberate future decision rather
 than something this gate tunes for.
 
+## Day 6 live checkout-preflight scoring
+
+`POST /api/v1/checkout/preflight` scores a single live checkout attempt and acts on it. This is a
+deliberate expansion of the API surface, which previously held at two health routes and the webhook.
+
+The decision uses the locked Day 4 model and its single `decision_threshold` only. Neither Gate C1
+policy band takes part in any real decision, and an isolation test proves `riskloom.policy` is not
+reachable from the live path even transitively.
+
+```
+probability >= decision_threshold  ->  DENY   (no order created)
+otherwise                          ->  ALLOW  (create a Razorpay test-mode order)
+```
+
+REVIEW is an operational fail-safe tier rather than a risk band. It is reached only when a decision
+cannot be safely completed -- feature computation failed, scoring failed, order creation failed, or
+the process order budget is exhausted -- and the ledger records the underlying `risk_decision`
+separately from the `action` so the downgrade stays auditable.
+
+The order budget (`razorpay_max_orders_per_process`, default 5) counts order-creation *attempts*
+rather than successes: it is reserved before the upstream call, so an attempt Razorpay rejects
+still consumes one unit. That is the safer direction, since what needs bounding is outbound calls
+to a payment provider, but it does mean the counter can exceed the number of orders that actually
+exist.
+
+Live features come from the unmodified Day 3 `FeatureEngine`, held warm in one process-wide
+instance behind a single lock. The lock covers server-side timestamp assignment and the engine call
+only; order creation and database writes happen outside it. State is **in-memory only and does not
+survive a restart** -- after a restart the engine is cold and history features read zero until live
+traffic rebuilds them. At startup the service refuses to run unless the running feature
+configuration matches the effective configuration in the locked feature manifest, that manifest's
+hash matches the one pinned in the modeling configuration, and the model's feature order matches
+the live schema.
+
+Every decision is recorded in the append-only `risk_decisions` ledger with pseudonymous fields
+only; REVIEW additionally creates a `review_items` row. There is no auto-resolution of review items.
+
+```powershell
+uv run alembic upgrade head
+uv run uvicorn riskloom.main:app --host 127.0.0.1 --port 8000
+```
+
+### Known limitation: live-serving accuracy is not measured to held-out standard
+
+At preflight an attempt's outcome does not exist yet, so the online adapter advances feature state
+with every attempt recorded as authorized. The 57 outcome-independent features are identical
+between training and serving; the 18 failure-derived features read low for live traffic.
+
+This has been measured rather than assumed. Replaying the 9,000-event policy-validation batch
+through the locked model under both assumptions -- true outcomes, as offline training saw them,
+versus every state-advancing outcome forced to authorized, as live serving assumes -- gives:
+
+| Metric | True outcomes | Assumed authorized | Delta |
+| --- | ---: | ---: | ---: |
+| Recall | 0.8556 | 0.6000 | -0.2556 |
+| Precision | 0.5768 | 0.1840 | -0.3928 |
+| False-positive rate | 1.28% | 5.43% | +4.15 pp |
+| Average precision | 0.4384 | 0.5746 | +0.1362 |
+| ROC-AUC | 0.9260 | 0.8194 | -0.1066 |
+| Total cost (FN*25 + FP*1) | 763 | 2,279 | +1,516 (+199%) |
+| Attacks missed | 26 | 72 | +46 |
+
+The degradation is material: under the live assumption the same locked model misses 2.8x as many
+attacks and costs roughly three times as much. Average precision rises while every threshold-based
+metric falls, because the blind spot shifts the score distribution rather than uniformly worsening
+the ranking, leaving the fixed locked threshold badly placed for that distribution.
+
+**Gate B2's held-out figures describe offline scoring with true outcomes and must not be quoted as
+live-serving accuracy.** Webhook-driven failure reconciliation, which would close this gap, is named
+future work and is not in this gate. The measurement is reproducible through
+`riskloom.analysis.blindspot`.
+
 ## Prerequisites
 
 - Python 3.11

@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal, Self
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -25,6 +26,20 @@ class Settings(BaseSettings):
     razorpay_key_secret: SecretStr
     razorpay_webhook_secret: SecretStr = Field(min_length=32)
     webhook_max_body_bytes: int = Field(default=262_144, ge=1_024, le=1_048_576)
+
+    # Day 6 live scoring. These name the locked, already-published artifacts the serving path
+    # must bind to; the service fails closed at startup if any of them does not validate.
+    feature_config_path: Path = Path("configs/features/default.json")
+    modeling_config_path: Path = Path("configs/modeling/default.json")
+    risk_model_directory: Path = Path("artifacts/models/development")
+    feature_manifest_path: Path = Path(
+        "artifacts/features/development-v1.1.0-config-bound/manifest.json"
+    )
+    # Hard cap on Razorpay order-creation attempts a single process may make. This makes the
+    # project constraint of not generating bulk test-mode traffic a structural guarantee rather
+    # than a promise: past the cap, an ALLOW fail-safes to REVIEW instead of attempting an order.
+    # The cap counts attempts rather than successes, so a rejected attempt still consumes one.
+    razorpay_max_orders_per_process: int = Field(default=5, ge=0, le=50)
 
     @field_validator("database_url")
     @classmethod

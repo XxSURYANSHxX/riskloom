@@ -15,6 +15,10 @@ from riskloom.core.logging import (
     request_id_from_header,
 )
 from riskloom.db.session import Database
+from riskloom.integrations.razorpay.client import RazorpayOrdersClient
+from riskloom.services.preflight import OrderBudget
+from riskloom.serving.engine_host import OnlineFeatureEngine
+from riskloom.serving.model_host import load_serving_bundle
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -24,9 +28,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         configure_logging(resolved_settings.log_level)
         app.state.settings = resolved_settings
         app.state.database = Database(resolved_settings)
+        # Fail closed: the service must not serve a decision unless it can prove it is bound to
+        # the locked feature configuration and the locked model those features were trained with.
+        app.state.serving_bundle = load_serving_bundle(
+            feature_config_path=resolved_settings.feature_config_path,
+            modeling_config_path=resolved_settings.modeling_config_path,
+            model_directory=resolved_settings.risk_model_directory,
+            feature_manifest_path=resolved_settings.feature_manifest_path,
+        )
+        # One warm engine and one HTTP client for the whole process lifetime.
+        app.state.engine_host = OnlineFeatureEngine(app.state.serving_bundle.feature_config)
+        app.state.orders_client = RazorpayOrdersClient(resolved_settings)
+        app.state.order_budget = OrderBudget(
+            limit=resolved_settings.razorpay_max_orders_per_process
+        )
         try:
             yield
         finally:
+            await app.state.orders_client.close()
             await app.state.database.close()
 
     application = FastAPI(

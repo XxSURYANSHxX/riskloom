@@ -38,6 +38,52 @@ These instructions apply to the entire repository.
 - Valid unsupported events are audited as ignored. Retryable processing failures must roll back and
   return non-2xx.
 
+## Live scoring invariants
+
+- Live scoring calls the unmodified Day 3 `FeatureEngine.process()`. There must never be a second
+  implementation of any feature. The train/serve parity test drives the real
+  `extract_feature_dataset` on one side and the online host on the other and requires all 75
+  features to match exactly.
+- Risk is decided by the locked Day 4 model and its single `decision_threshold` only. Compare the
+  full float64 probability against the full float64 threshold from `model.json`. The
+  `Numeric(20, 18)` ledger column is storage and audit only: it rounds the locked threshold to
+  `0.003386294915518273`, which is exactly a real tie-cluster probability, so a decision made from
+  the stored value would flip every row in that cluster.
+- Neither Gate C1 policy band may be reachable from a live decision. `riskloom.serving`,
+  `riskloom.api` and `riskloom.services.preflight` must not import `riskloom.policy` or
+  `riskloom.modeling.training`, which reaches a band through its boundary diagnostic.
+- REVIEW is an operational fail-safe tier, never a risk band. It is reached only when a decision
+  cannot be safely completed: feature computation failed, scoring failed, order creation failed, or
+  the process order budget is exhausted. No second risk threshold may exist.
+- Serialise the read-then-update of rolling state with one process-wide lock. Per-merchant locks
+  are unsound because device, network and instrument indices are shared across merchants. Hold no
+  I/O inside the lock.
+- Assign event timestamps server-side, strictly increasing, under the lock. Never accept a
+  client-supplied timestamp: the engine requires strict monotonicity, and a caller must not be able
+  to replay stale timestamps into rolling state.
+- Live feature state is in-memory only and does not survive a process restart. Do not add a
+  persistence layer without an explicit gate.
+- Claim the idempotency key before touching the engine, so a retry cannot advance state twice or
+  create a second order. A crashed run leaves a `pending` row and the retry is refused with 409;
+  there is no auto-recovery.
+- Cap Razorpay order-creation attempts per process. The cap counts attempts, not successes:
+  the budget is taken before the upstream call, so a rejected attempt still consumes one and
+  the counter can exceed the number of orders that exist. Past the cap an ALLOW fail-safes to
+  REVIEW without calling Razorpay at all.
+- Only `rzp_test_` keys, and nothing in this path may weaken Day 1 webhook signature verification,
+  idempotency or redaction.
+
+### Known limitation: live-serving accuracy is not measured to held-out standard
+
+At preflight an attempt's outcome does not exist yet, so live serving advances state with every
+attempt recorded as authorized. The 57 outcome-independent features are exact; the 18
+failure-derived ones read low. This is quantified, not assumed: replaying the 9,000-event
+policy-validation batch through the locked model under both assumptions gives recall 0.856 -> 0.600,
+precision 0.577 -> 0.184, false-positive rate 1.28% -> 5.43%, and total cost 763 -> 2,279 units
+(+199%). The degradation is material. Gate B2's held-out numbers describe offline scoring with true
+outcomes and must not be quoted as live-serving accuracy. Webhook-driven failure reconciliation is
+named future work; reproduce the measurement with `riskloom.analysis.blindspot`.
+
 ## Decision-boundary invariants
 
 - Probability parity does not imply decision parity. The modeling parity gate compares calibrated
