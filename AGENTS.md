@@ -267,3 +267,28 @@ named future work; reproduce the measurement with `riskloom.analysis.blindspot`.
 - Generated model and evaluation artifacts belong under ignored `artifacts/models/` and
   `artifacts/evaluations/`. Do not run the official development held-out evaluation unless the user
   explicitly authorizes that separate gate.
+
+## Dashboard invariants
+
+- The coordination graph layout lives in `riskloom.serving.coordination` as pure, pytest-covered
+  Python: connected-component hub ordering, ellipse placement scaled to the requested canvas,
+  centroid-based event placement, and deterministic relaxation. It is not client-side JavaScript.
+  Any change to graph layout belongs there, and its tests assert on-screen geometry, so a
+  regression in them is a visible regression. Do not reintroduce positioning logic in `static/`.
+- Layout must stay deterministic: no random source, ordering derived from sorted node identifiers,
+  and any jitter hashed from the identifier. The same graph and canvas always produce the same
+  coordinates.
+- Build graph topology first and lay it out second. A single pass that positions each event as its
+  hub is emitted anchors a shared event to whichever hub sorts first, which is what previously
+  collapsed the graph into a corner of the canvas.
+- `canvas_width` and `canvas_height` are request inputs that affect coordinates only. They must
+  never change which nodes or edges exist, and they are not persisted.
+- Keep the dashboard read-only and GET-only. It must not gain a mutation path for review items,
+  decisions, or orders without an explicit gate: doing so would pull it inside the safety boundary
+  Days 4-6 were held to.
+- Display only stored pseudonymous tokens and aggregates from the explicit response allowlist.
+  Never display or derive a feature name, feature value, policy band, or recomputed score. Live
+  ledger co-occurrence and offline `evaluation.json` campaign metrics must stay visibly distinct;
+  the offline figures come from ground-truth labels that do not exist for live traffic.
+- Treat a missing `artifacts/evaluations/` artifact as an ordinary state. The model endpoint answers
+  404 and the client renders an unavailable state; startup must never depend on it.

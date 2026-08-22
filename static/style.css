@@ -1,0 +1,385 @@
+/* RiskLoom risk-operations dashboard.
+ *
+ * Design tokens. Colour carries meaning, not decoration:
+ *   calm         normal / allowed traffic, deliberately low-chroma so a quiet screen recedes
+ *   elevated     REVIEW, including a fail-safe downgrade -- the ops-room "held, needs a human"
+ *   alert        DENY -- rare by construction, so one red row against a calm field is unmissable
+ *   coordination shared-token linkage ONLY. It never appears in the risk scale, so "these events
+ *                are connected" can never be misread as "these events are severe".
+ */
+
+:root {
+  --rl-ground: #12171f;
+  --rl-surface: #1b222d;
+  --rl-surface-raised: #222b38;
+  --rl-line: #2c3646;
+  --rl-calm: #5c7a99;
+  --rl-elevated: #d9a441;
+  --rl-alert: #e0574b;
+  --rl-coordination: #56c8b8;
+  /* Narrow accent used for exactly one thing: the digit where a probability first diverges from
+   * the locked threshold. It is deliberately outside both the risk scale (steel/amber/red) and
+   * the coordination hue (teal), so "near the boundary" cannot be misread as either "severe" or
+   * "connected". It appears nowhere else. */
+  --rl-boundary: #9b8bd0;
+
+  --rl-text: #dbe4ef;
+  --rl-text-dim: #8494a8;
+  --rl-text-faint: #5b6779;
+
+  --rl-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --rl-body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --rl-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --rl-gap: 16px;
+  --rl-radius: 6px;
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("./fonts/space-grotesk-var.woff2") format("woff2");
+  font-weight: 300 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/jetbrains-mono-var.woff2") format("woff2");
+  font-weight: 100 800;
+  font-display: swap;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--rl-ground);
+  color: var(--rl-text);
+  font-family: var(--rl-body);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numbers are the product. Tabular figures everywhere, so digits align down a column and a
+ * probability can be compared against the threshold at a glance. */
+.mono, td.num, .prob, .token {
+  font-family: var(--rl-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "zero" 1;
+}
+
+/* ---------------------------------------------------------------- chrome */
+
+.shell { display: flex; flex-direction: column; height: 100%; }
+
+header.top {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 20px;
+  height: 52px;
+  background: var(--rl-surface);
+  border-bottom: 1px solid var(--rl-line);
+  flex: none;
+}
+
+.brand {
+  font-family: var(--rl-display);
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--rl-text);
+}
+.brand span { color: var(--rl-coordination); }
+
+nav.views { display: flex; gap: 2px; margin-left: 8px; }
+
+nav.views button {
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--rl-text-dim);
+  font-family: var(--rl-body);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  padding: 16px 14px 14px;
+  cursor: pointer;
+}
+nav.views button:hover { color: var(--rl-text); }
+nav.views button[aria-selected="true"] {
+  color: var(--rl-text);
+  border-bottom-color: var(--rl-coordination);
+}
+
+.live-state {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--rl-text-dim);
+  font-size: 12px;
+}
+.pulse {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--rl-coordination);
+  box-shadow: 0 0 0 0 rgba(86, 200, 184, 0.5);
+  animation: pulse 3s ease-out infinite;
+}
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(86, 200, 184, 0.45); }
+  70%  { box-shadow: 0 0 0 7px rgba(86, 200, 184, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(86, 200, 184, 0); }
+}
+.live-state.paused .pulse { animation: none; background: var(--rl-text-faint); }
+
+main { flex: 1; overflow: auto; padding: var(--rl-gap); }
+.view[hidden] { display: none; }
+
+/* ---------------------------------------------------------------- stat strip */
+
+.stats { display: flex; gap: var(--rl-gap); margin-bottom: var(--rl-gap); flex-wrap: wrap; }
+
+.stat {
+  background: var(--rl-surface);
+  border: 1px solid var(--rl-line);
+  border-radius: var(--rl-radius);
+  padding: 12px 16px;
+  min-width: 118px;
+}
+.stat .label {
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--rl-text-faint);
+}
+.stat .value {
+  font-family: var(--rl-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 22px;
+  margin-top: 5px;
+}
+.stat.allow  .value { color: var(--rl-calm); }
+.stat.review .value { color: var(--rl-elevated); }
+.stat.deny   .value { color: var(--rl-alert); }
+
+/* ---------------------------------------------------------------- tables */
+
+.panel {
+  background: var(--rl-surface);
+  border: 1px solid var(--rl-line);
+  border-radius: var(--rl-radius);
+  overflow: hidden;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--rl-line);
+}
+.panel-head h2 {
+  font-family: var(--rl-display);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--rl-text-dim);
+  margin: 0;
+}
+.panel-head .spacer { margin-left: auto; }
+
+select, .filter {
+  background: var(--rl-surface-raised);
+  border: 1px solid var(--rl-line);
+  color: var(--rl-text);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-family: var(--rl-body);
+  font-size: 12px;
+}
+
+table { width: 100%; border-collapse: collapse; }
+
+th {
+  text-align: left;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--rl-text-faint);
+  font-weight: 500;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--rl-line);
+  white-space: nowrap;
+}
+th.num, td.num { text-align: right; }
+th.sortable { cursor: pointer; }
+th.sortable:hover { color: var(--rl-text-dim); }
+
+td {
+  padding: 13px 16px;
+  border-bottom: 1px solid rgba(44, 54, 70, 0.35);
+  font-size: 13px;
+  white-space: nowrap;
+}
+tbody tr { cursor: pointer; }
+/* Alternating rows, using opacity of an existing surface token rather than a new colour, so a run
+ * of identical actions still resolves into individual lines. */
+tbody tr:nth-child(even) { background: rgba(34, 43, 56, 0.4); }
+tbody tr:hover { background: var(--rl-surface-raised); }
+tbody tr.is-deny { background: rgba(224, 87, 75, 0.06); }
+tbody tr.is-deny:hover { background: rgba(224, 87, 75, 0.11); }
+/* A rule above the first row of each minute. Bursts arrive inside one minute, so this turns a
+ * flat run of reviews into visible groups without adding a colour. */
+tbody tr.minute-start td { border-top: 1px solid var(--rl-line); }
+tbody tr.minute-start td:first-child { box-shadow: inset 2px 0 0 var(--rl-line); }
+tbody tr.enter { animation: enter 220ms ease-out; }
+@keyframes enter { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; } }
+
+.token { color: var(--rl-text-dim); font-size: 12px; }
+
+/* Numbers read as one continuous figure: a single weight, a single colour, tabular figures. */
+.prob {
+  font-family: var(--rl-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--rl-text);
+  letter-spacing: -0.1px;
+}
+/* Exactly one character is ever marked, and only on rows near the threshold. Same weight as its
+ * neighbours, so the number keeps its shape and only the hue changes. */
+.prob b.divergent {
+  font-weight: 400;
+  color: var(--rl-boundary);
+  border-bottom: 1px solid rgba(155, 139, 208, 0.55);
+}
+
+.chip {
+  display: inline-block;
+  font-family: var(--rl-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid;
+}
+.chip.allow  { color: var(--rl-calm);     border-color: rgba(92, 122, 153, 0.45); }
+.chip.review { color: var(--rl-elevated); border-color: rgba(217, 164, 65, 0.45); }
+.chip.deny   { color: var(--rl-alert);    border-color: rgba(224, 87, 75, 0.5); background: rgba(224, 87, 75, 0.08); }
+
+.muted { color: var(--rl-text-faint); }
+.empty { padding: 34px 16px; text-align: center; color: var(--rl-text-faint); font-size: 13px; }
+
+/* ---------------------------------------------------------------- coordination */
+
+.coord-layout { display: grid; grid-template-columns: 1fr 296px; gap: var(--rl-gap); }
+@media (max-width: 1120px) { .coord-layout { grid-template-columns: 1fr; } }
+
+#graph {
+  display: block;
+  width: 100%;
+  /* A real height, so the client-side layout has an actual box to fill rather than an
+   * aspect-ratio-derived one. */
+  height: clamp(420px, calc(100vh - 260px), 760px);
+  background: var(--rl-ground);
+}
+
+.edge { stroke: var(--rl-coordination); fill: none; }
+.hub-ring { fill: none; stroke: var(--rl-coordination); }
+.hub-core { fill: rgba(86, 200, 184, 0.08); }
+.hub-label {
+  font-family: var(--rl-mono);
+  font-size: 9.5px;
+  fill: var(--rl-coordination);
+  text-anchor: middle;
+}
+.hub-count {
+  font-family: var(--rl-mono);
+  font-size: 12px;
+  font-weight: 600;
+  fill: var(--rl-coordination);
+  text-anchor: middle;
+}
+.ev { cursor: pointer; }
+.ev.allow  { fill: var(--rl-calm); }
+.ev.review { fill: var(--rl-elevated); }
+.ev.deny   { fill: var(--rl-alert); }
+.ev.deny.halo { fill: none; stroke: var(--rl-alert); opacity: 0.35; }
+.node-enter { animation: enter 200ms ease-out; }
+
+.legend {
+  display: flex;
+  gap: 16px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--rl-line);
+  font-size: 11px;
+  color: var(--rl-text-faint);
+  flex-wrap: wrap;
+}
+.legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+
+.rail { display: flex; flex-direction: column; gap: var(--rl-gap); }
+
+.offline-banner {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--rl-text-faint);
+  border: 1px dashed var(--rl-line);
+  border-radius: 3px;
+  padding: 5px 8px;
+  margin: 12px 16px 0;
+  text-align: center;
+}
+
+.kv { display: flex; justify-content: space-between; padding: 6px 16px; font-size: 12.5px; }
+.kv span:first-child { color: var(--rl-text-dim); }
+.kv span:last-child { font-family: var(--rl-mono); font-variant-numeric: tabular-nums; }
+.kv.tight { padding-top: 3px; padding-bottom: 3px; }
+
+/* ---------------------------------------------------------------- case detail */
+
+.verdict {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--rl-line);
+}
+.verdict .event { font-family: var(--rl-mono); font-size: 13px; color: var(--rl-text-dim); }
+.verdict .action {
+  font-family: var(--rl-display);
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  margin-left: auto;
+}
+.verdict .action.allow  { color: var(--rl-calm); }
+.verdict .action.review { color: var(--rl-elevated); }
+.verdict .action.deny   { color: var(--rl-alert); }
+
+.compare { padding: 16px 20px; border-bottom: 1px solid var(--rl-line); }
+.compare .row { display: flex; gap: 12px; align-items: baseline; font-family: var(--rl-mono); font-size: 13px; }
+.compare .row .tag { width: 92px; color: var(--rl-text-faint); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
+.compare .delta { color: var(--rl-text-dim); font-size: 12px; margin-top: 7px; }
+
+.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+@media (max-width: 900px) { .detail-grid { grid-template-columns: 1fr; } }
+.detail-grid > div { padding: 14px 20px; }
+.detail-grid > div + div { border-left: 1px solid var(--rl-line); }
+.detail-grid h3 {
+  font-size: 10px; letter-spacing: 0.13em; text-transform: uppercase;
+  color: var(--rl-text-faint); font-weight: 500; margin: 0 0 10px;
+}
+.ctx { display: flex; justify-content: space-between; padding: 5px 0; font-size: 12.5px; border-bottom: 1px solid rgba(44,54,70,0.4); }
+.ctx .k { color: var(--rl-text-dim); }
+.ctx .v { font-family: var(--rl-mono); font-variant-numeric: tabular-nums; }
+.ctx .v em { font-style: normal; color: var(--rl-alert); }
+.ctx-note { font-size: 11px; color: var(--rl-text-faint); margin-top: 10px; line-height: 1.5; }
+
+a.back { color: var(--rl-coordination); text-decoration: none; font-size: 12px; cursor: pointer; }
+a.back:hover { text-decoration: underline; }

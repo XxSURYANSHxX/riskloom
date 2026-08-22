@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RiskLoom — risk operations</title>
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<div class="shell">
+
+  <header class="top">
+    <div class="brand">Risk<span>Loom</span></div>
+    <nav class="views" role="tablist">
+      <button role="tab" data-view="stream" aria-selected="true">Stream</button>
+      <button role="tab" data-view="coordination" aria-selected="false">Coordination</button>
+      <button role="tab" data-view="ledger" aria-selected="false">Ledger</button>
+    </nav>
+    <div class="live-state" id="live-state">
+      <span class="pulse"></span><span id="live-label">live · 3s</span>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- ---------------------------------------------------------- stream -->
+    <section class="view" id="view-stream">
+      <div class="stats" id="stats"></div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Live decision stream</h2>
+          <span class="spacer"></span>
+          <span class="muted" id="stream-meta"></span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Event</th>
+              <th>Device</th>
+              <th>Network</th>
+              <th class="num">Probability</th>
+              <th class="num">Amount</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="stream-body"></tbody>
+        </table>
+        <div class="empty" id="stream-empty" hidden>No decisions recorded yet.</div>
+      </div>
+    </section>
+
+    <!-- ---------------------------------------------------- coordination -->
+    <section class="view" id="view-coordination" hidden>
+      <div class="coord-layout">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Shared-token coordination</h2>
+            <span class="spacer"></span>
+            <span class="muted" id="graph-meta"></span>
+          </div>
+          <svg id="graph" viewBox="0 0 960 640" preserveAspectRatio="xMidYMid meet"
+               role="img" aria-label="Coordination graph of events linked by shared tokens"></svg>
+          <div class="legend">
+            <span><i style="background:var(--rl-calm)"></i>allow</span>
+            <span><i style="background:var(--rl-elevated)"></i>review</span>
+            <span><i style="background:var(--rl-alert)"></i>deny</span>
+            <span><i style="background:var(--rl-coordination)"></i>shared device / network / instrument</span>
+            <span class="muted">hub size grows with reuse · derived from the ledger, not a model output</span>
+          </div>
+        </div>
+
+        <aside class="rail">
+          <div class="panel">
+            <div class="panel-head"><h2>Model evaluation</h2></div>
+            <div class="offline-banner">offline · held-out · not live traffic</div>
+            <div id="model-panel"></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ---------------------------------------------------------- ledger -->
+    <section class="view" id="view-ledger" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Audit ledger</h2>
+          <span class="spacer"></span>
+          <select id="ledger-filter" class="filter">
+            <option value="">all actions</option>
+            <option value="allow">allow</option>
+            <option value="review">review</option>
+            <option value="deny">deny</option>
+          </select>
+          <span class="muted" id="ledger-meta"></span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th class="sortable" data-sort="occurred_at">Time</th>
+              <th>Event</th>
+              <th>Merchant</th>
+              <th>Device</th>
+              <th>Instrument</th>
+              <th class="num sortable" data-sort="calibrated_probability">Probability</th>
+              <th class="num sortable" data-sort="amount_subunits">Amount</th>
+              <th>Risk</th>
+              <th>Action</th>
+              <th>Fail-safe</th>
+              <th>Order</th>
+            </tr>
+          </thead>
+          <tbody id="ledger-body"></tbody>
+        </table>
+        <div class="empty" id="ledger-empty" hidden>No decisions match this filter.</div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------ case detail -->
+    <section class="view" id="view-case" hidden>
+      <a class="back" id="case-back">&larr; back</a>
+      <div class="panel" style="margin-top:10px">
+        <div id="case-body"></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -457,6 +457,78 @@ live-serving accuracy.** Webhook-driven failure reconciliation, which would clos
 future work and is not in this gate. The measurement is reproducible through
 `riskloom.analysis.blindspot`.
 
+## Day 7 risk-operations dashboard
+
+A read-only operations view over data the earlier gates already write. It adds no computation, no
+mutation path and no trust boundary: every figure it shows was decided and stored elsewhere, and
+the dashboard only projects it. Five GET endpoints under `/api/v1/dashboard` serve JSON, and a
+static client is mounted at `/dashboard`.
+
+```powershell
+uv run alembic upgrade head
+uv run uvicorn riskloom.main:app --host 127.0.0.1 --port 8000
+# then open http://127.0.0.1:8000/dashboard
+```
+
+The client is hand-written ES modules with no build step and no framework, and it deliberately
+holds no logic worth testing. Grouping, sizing, formatting and graph layout are computed in Python
+and covered by pytest; the client draws what it is given. The one number it contributes is the
+measured pixel size of the graph panel, which it forwards as `canvas_width` and `canvas_height`
+because the server cannot otherwise know how wide the viewport is.
+
+| View | Shows |
+| --- | --- |
+| Stream | Newest decisions first, one line each, refreshed every 3s. Probabilities render at full precision -- the locked threshold carries nineteen significant decimals and a real tie-cluster sits one ULP below it, so rounding for display would erase the distinction the system is built around. |
+| Coordination | The shared-token graph: entities are hubs, decisions are the small nodes attached to them. Refreshed every 5s. |
+| Case detail | One decision's stored fields beside ledger-derived co-occurrence context. |
+| Ledger | The full filterable history, refreshed every 10s. |
+
+Updates are polled rather than pushed. Events only appear when a checkout attempt is posted, so a
+3-second poll already outpaces the event rate; SSE or WebSockets would add connection lifecycle and
+a second server code path for no gain at this scale, and remain the documented upgrade route.
+
+### The coordination graph is not campaign detection
+
+The two panels on the coordination view come from different places and mean different things. This
+distinction is load-bearing and the interface labels it in both directions.
+
+The **graph** is live and derived entirely from the ledger. A hub appears when a stored device,
+network or instrument token is shared by more than one decision; hub radius grows with the number
+of attached decisions and ring thickness with the number of distinct token kinds that co-occur.
+That is a projection of stored pseudonymous tokens, nothing more. **RiskLoom has no live campaign
+detection** -- no model, threshold or classifier decides that these decisions form a campaign, and
+the ledger has no campaign column. Shared tokens are evidence an operator interprets.
+
+The **side panel** is offline and static. Its campaign figures are read from
+`artifacts/evaluations/development/evaluation.json`, the Gate B2 held-out evaluation, which was
+computed against ground-truth simulation labels that do not exist for live traffic. Those numbers
+describe how the locked model performed on a historical labelled dataset. They are never recomputed
+from live data, never updated by traffic, and must not be read as a claim about the events drawn to
+their left.
+
+Ledger co-occurrence counts on the case-detail view are likewise structural context, not model
+features. The 75-feature vector is not stored, and recomputing it would be wrong -- the engine's
+rolling state has moved on, so a recomputed vector would differ from the one the decision used. No
+feature name is displayed anywhere in the dashboard.
+
+### Known limitations
+
+- **No authentication.** Every dashboard endpoint is unauthenticated and the client ships no login.
+  This is acceptable only because the service is a local single-process build; the dashboard must
+  not be exposed on a network interface as it stands.
+- **No mutation path.** The dashboard is read-only in this gate. Review items surface only as
+  counts -- a pending total on the summary and a per-decision count on case detail -- and cannot be
+  listed, approved, resolved or overridden. No endpoint accepts anything but `GET`; every other verb
+  answers 405 at the router, which is enforcement by routing rather than convention. Making review
+  actionable is the natural next step, but it would pull the dashboard inside the safety boundary
+  Days 4-6 were held to, and that needs its own gate.
+- **`GET /api/v1/dashboard/model` returns 404 when the evaluation artifact is absent.** The
+  `artifacts/` tree is Git-ignored, so a fresh clone has no `evaluation.json` and this is an
+  ordinary state rather than an error. The endpoint 404s, the panel renders an explicit unavailable
+  state, and startup is unaffected.
+- **The dashboard reads the database the live path writes.** Queries are strictly read-only and no
+  transaction outlasts a single statement, but the two share one PostgreSQL instance.
+
 ## Prerequisites
 
 - Python 3.11

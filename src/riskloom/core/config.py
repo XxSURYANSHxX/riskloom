@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # The cap counts attempts rather than successes, so a rejected attempt still consumes one.
     razorpay_max_orders_per_process: int = Field(default=5, ge=0, le=50)
 
+    # Day 7 dashboard. The evaluation artifact is Git-ignored, so the dashboard treats its absence
+    # as an ordinary state rather than an error.
+    evaluation_artifact_path: Path = Path("artifacts/evaluations/development/evaluation.json")
+    dashboard_static_directory: Path = Path("static")
+
     @field_validator("database_url")
     @classmethod
     def require_async_postgresql(cls, value: SecretStr) -> SecretStr:

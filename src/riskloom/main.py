@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 import structlog
 import uvicorn
 from fastapi import FastAPI, Request, Response
+from fastapi.staticfiles import StaticFiles
 
 from riskloom.api.router import api_router
 from riskloom.core.config import Settings, get_settings
@@ -92,6 +93,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             clear_request_context()
 
     application.include_router(api_router)
+
+    # The dashboard is a static, read-only client. StaticFiles serves GET and HEAD only, so
+    # mounting it adds no mutation surface. Missing directory is tolerated so the API still starts
+    # in environments where the client was not shipped.
+    static_directory = (settings or get_settings()).dashboard_static_directory
+    if static_directory.is_dir():
+        application.mount(
+            "/dashboard",
+            StaticFiles(directory=static_directory, html=True),
+            name="dashboard",
+        )
+
     return application
 
 
