@@ -16,7 +16,13 @@ class Database:
         self.engine: AsyncEngine = create_async_engine(
             settings.database_url.get_secret_value(),
             pool_pre_ping=True,
-            connect_args={"timeout": settings.database_connect_timeout_seconds},
+            connect_args={
+                "timeout": settings.database_connect_timeout_seconds,
+                # Statement-level bound. A frozen server keeps the socket open and answers
+                # nothing, so without this the request never returns and the fail-safe never
+                # fires. Discovered by pausing the database during a live preflight.
+                "command_timeout": settings.database_command_timeout_seconds,
+            },
         )
         self.session_factory = async_sessionmaker(
             bind=self.engine,

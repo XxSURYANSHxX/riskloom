@@ -666,6 +666,146 @@ current id before changing this value rather than trusting a published list.
 - **Free-tier terms may permit training on submitted content.** This is exactly why the input
   contract is aggregates and enums only: no token, no identifier and no timestamp leaves the process.
 
+## Day 9 failure injection, drift detection, and Docker packaging
+
+Three things: prove the resilience the earlier gates built by actually breaking a running instance,
+add score-drift visibility that can never influence a decision, and package the stack so it starts
+with one command.
+
+### Failure injection
+
+Nothing in this gate re-implements a fail-safe. Every behaviour below already existed; what was
+missing was any way to *watch* it happen.
+
+```powershell
+uv run python scripts/failure_drill.py --base-url http://127.0.0.1:8000 `
+  --scenario all --webhook-secret $env:RISKLOOM_RAZORPAY_WEBHOOK_SECRET --verbose
+```
+
+The drill is a client of the service and never reaches around it. Storage scenarios ask you to
+interrupt the database yourself (`docker compose pause postgres`) rather than doing it invisibly.
+`tests/failure_injection/` runs the same scenarios in-process for CI.
+
+| Scenario | Proven behaviour |
+| --- | --- |
+| Duplicate webhook replay | Five deliveries of one provider event id produce one business effect |
+| Out-of-order replay | A late `authorized` after an early `captured` is stored as a distinct fact; both survive, correctly ordered |
+| Storage unavailable mid-preflight | 503 `storage_unavailable`, no partial ledger state, never a 200 ALLOW |
+| Ledger write fails after an order exists | 503, the row stays `pending`, and `preflight_ledger_write_failed` carries the order id so the orphan is reconcilable |
+| Model file missing or corrupted | Startup refuses with a `serving_*` identity; the service does not serve |
+
+### What the storage drill actually found
+
+The DB fail-safe was already present -- `checkout.py` caught `SQLAlchemyError` and answered 503.
+Injecting a real outage against the container showed two things that reading the code had not.
+
+**A frozen database is not a refusing database.** `docker compose stop postgres` refuses
+connections and the request fails in **3.0s with 503**. `docker compose pause postgres` freezes the
+server process while the socket stays open, and the failure then surfaces as a bare `TimeoutError`
+-- a subclass of `OSError`, which SQLAlchemy never wraps. That fell through to the generic handler
+and answered **500 `internal_error`**, which reads as "we broke" rather than "storage is gone". The
+handler now catches `OSError` as well, and both shapes answer 503.
+
+**The frozen case is still not bounded server-side.** An `asyncio.timeout` around the scoring path
+was added and does bound cancellable stalls, but it does not fire here: SQLAlchemy's greenlet
+bridge does not deliver the cancellation into asyncpg's blocked read, so the request unwinds only
+when the connection dies. Measured, the response time tracked the *client's* timeout exactly
+(60s -> 60s, 90s -> 90s, 120s -> 120s). The decision stays fail-closed either way -- 503, never an
+unbacked ALLOW, no partial state -- but the latency of the frozen case is a known limitation rather
+than a solved problem.
+
+### Drift: informational, and honest about a weak metric
+
+`GET /api/v1/dashboard/drift` reports the Population Stability Index of recent calibrated
+probabilities against the locked held-out reference, with a panel on the coordination view.
+
+```
+PSI = sum over bins of (actual_share - expected_share) * ln(actual_share / expected_share)
+```
+
+Bands are the standard convention: `< 0.1` no significant shift, `0.1`-`0.25` moderate, `> 0.25`
+significant. The reference is read from `artifacts/evaluations/development/evaluation.json` and
+nothing else -- **the protected test partition is never opened, re-scored or re-derived**, only the
+already-published per-bin counts.
+
+**The locked reference is degenerate for this purpose, and the surface is built around that rather
+than hiding it.** Of 17,000 held-out rows, 97.78% fall in the first bin, five bins are empty, and
+the locked threshold itself falls *inside* the first bin -- so the binning has almost no resolution
+where decisions actually happen. Three consequences:
+
+- **The zero-bin epsilon is load-bearing.** `ln(x/0)` is undefined, so empty shares are floored at
+  `PSI_EPSILON = 1e-4`. That choice moves the answer across a band boundary: on the same data, PSI
+  reads 0.0559 (no shift) at `1e-3` and 0.2122 (moderate) at `1e-6`. The constant is pinned, the
+  sensitivity is asserted in the tests, and it must not be changed without re-recording it.
+- **Small samples get no band at all.** Below `PSI_MINIMUM_ROWS = 200` the endpoint answers
+  `insufficient_data` with `psi: null`. A stability index computed from a 14-row ledger would be
+  the most misleading number on the screen.
+- **Per-bin contributions are always reported.** At demo scale a benign 414-row window reads PSI
+  0.1090 "moderate" -- and the breakdown shows bin `[0.9, 1.0)` contributing **94%** of it. That is
+  not drift; it is the reference containing ~2% attack traffic that the window does not. The scalar
+  alone would have been read as a warning.
+
+Drift is read-only in the strongest sense available: the `riskloom.drift` package holds no session
+and imports no ORM, so it *cannot* write to any table. Isolation is enforced in both directions,
+statically over the AST and transitively in a fresh interpreter, exactly as for the live decision
+path and the explanation package.
+
+### Docker
+
+```powershell
+uv run python scripts/preflight_check.py    # names any missing artifact first
+docker compose up --build -d
+# postgres healthy -> migrate exits 0 -> app healthy on http://127.0.0.1:8000
+```
+
+Migrations run in their own one-shot `migrate` service that exits before the app starts, keeping
+the standing rule that the application never creates tables. No secret is present at any image
+layer: `.dockerignore` excludes `.env`, and the Razorpay keys, optional Gemini key and database
+password all arrive through the environment at runtime. Both existing behaviours were confirmed
+inside the container: an **absent Gemini key still starts and serves**, and a non-`rzp_test_`
+Razorpay key **refuses to start**. A blank key now counts as absent -- `.env.example` ships the
+variable empty, so a fresh clone copying it would otherwise have built a client with an empty key
+that failed every call.
+
+### `git clone` is not enough to run this
+
+Every artifact the service binds to at startup is Git-ignored. `git ls-files artifacts/ configs/`
+returns **seven files, all configuration, and no model at all**:
+
+```
+artifacts/models/development/model.json               not tracked
+artifacts/models/development/manifest.json            not tracked
+artifacts/features/...-config-bound/manifest.json     not tracked
+```
+
+The container therefore exits with a `serving_*` identity rather than serving, which is correct
+fail-closed behaviour and a confusing first experience. There is no way around it that is not
+worse: committing the artifacts violates the project's own rules, regenerating them in-container
+would produce a *different* model and break the locked-artifact contract, and weakening the startup
+binding would destroy the property Day 6 was built around. **A startup flag to skip model binding
+must not be added.**
+
+Artifacts are therefore an input, mounted read-only at `./artifacts:/app/artifacts:ro`. A fresh
+clone needs the artifact bundle copied into place, and `scripts/preflight_check.py` names exactly
+which files are missing before anything is started.
+
+### Known limitations
+
+- **A frozen database is not bounded server-side.** Described above. A refusing database fails in
+  ~3s; a frozen one unwinds only when the connection dies.
+- **An orphaned order is possible.** If storage dies after an ALLOW created a Razorpay order, the
+  order exists with no ledger record. The caller still gets 503, the row stays `pending`, and the
+  order id is logged under `preflight_ledger_write_failed`. There is no auto-recovery, consistent
+  with the rest of this path.
+- **PSI here is a coarse instrument.** The locked binning cannot see movement near the decision
+  threshold, because the threshold lies inside the most populated bin. Treat a reading as a prompt
+  to look, never as a measurement of decision quality.
+- **Action-mix drift was considered and deliberately not built.** Comparing the live allow/review/
+  deny mix against the evaluation's flagged rate would compare incomparable things: live REVIEW is
+  an operational fail-safe with no offline analogue, so 11 of 14 ledger rows would register as
+  enormous "drift" that says nothing about the model. A useful version would compare the deny rate
+  among *scored* rows only, with its own minimum-sample guard. That is future work.
+
 ## Prerequisites
 
 - Python 3.11

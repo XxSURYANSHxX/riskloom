@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     database_url: SecretStr
     database_connect_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
+    # Bounds every *statement*, not just connection establishment. Without it a database that
+    # is frozen rather than refusing -- a paused container, a hung host -- leaves an already
+    # pooled connection open and a live preflight waits forever instead of fail-safing to 503.
+    database_command_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
     razorpay_key_id: SecretStr
     razorpay_key_secret: SecretStr
     razorpay_webhook_secret: SecretStr = Field(min_length=32)
@@ -70,6 +74,22 @@ class Settings(BaseSettings):
             raise ValueError("database URL must use the postgresql+asyncpg driver")
         if not url.database:
             raise ValueError("database URL must name a database")
+        return value
+
+    @field_validator("gemini_api_key", mode="before")
+    @classmethod
+    def treat_blank_key_as_unconfigured(cls, value: object) -> object:
+        """A blank key means "not configured", not "configured with nothing".
+
+        ``.env.example`` ships this variable empty, so a fresh clone that copies it would
+        otherwise produce ``SecretStr('')`` -- truthy enough to build a client that then fails
+        every call with an authentication error. Absent and blank must behave identically.
+        """
+
+        if isinstance(value, str) and not value.strip():
+            return None
+        if isinstance(value, SecretStr) and not value.get_secret_value().strip():
+            return None
         return value
 
     @field_validator("razorpay_key_id")

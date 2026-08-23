@@ -17,5 +17,53 @@ services:
     volumes:
       - riskloom-postgres-data:/var/lib/postgresql/data
 
+  # Schema changes run in their own one-shot container and then exit. Deliberately not done inside
+  # the application's startup: the project's standing rule is that the app never creates tables,
+  # and keeping migration in a separate process keeps that boundary observable rather than implied.
+  migrate:
+    build:
+      context: .
+    image: riskloom-app:local
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - .env
+    environment:
+      RISKLOOM_DATABASE_URL: postgresql+asyncpg://${RISKLOOM_POSTGRES_USER:-riskloom}:${RISKLOOM_POSTGRES_PASSWORD:-riskloom_local_only}@postgres:5432/${RISKLOOM_POSTGRES_DB:-riskloom}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build:
+      context: .
+    image: riskloom-app:local
+    env_file:
+      - .env
+    environment:
+      # Overridden here because .env names the host-facing port, while inside the network the
+      # service is reachable by its compose name.
+      RISKLOOM_DATABASE_URL: postgresql+asyncpg://${RISKLOOM_POSTGRES_USER:-riskloom}:${RISKLOOM_POSTGRES_PASSWORD:-riskloom_local_only}@postgres:5432/${RISKLOOM_POSTGRES_DB:-riskloom}
+    volumes:
+      # Locked artifacts are inputs, not build products. Read-only so a running container cannot
+      # alter the model it is bound to.
+      - ./artifacts:/app/artifacts:ro
+    ports:
+      - "127.0.0.1:${RISKLOOM_APP_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).status==200 else 1)\""
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    stop_grace_period: 10s
+
 volumes:
   riskloom-postgres-data:

@@ -1,0 +1,30 @@
+# Secrets must never reach a build context, let alone a layer.
+.env
+.env.*
+!.env.example
+
+# Model, feature and evaluation artifacts are runtime inputs mounted read-only, never baked in.
+artifacts/
+
+.git
+.github
+.gitignore
+.venv
+.mypy_cache
+.pytest_cache
+.ruff_cache
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+htmlcov
+.coverage
+.coverage.*
+tests/
+docs/
+scratch/
+*.md
+!README.md
+Dockerfile
+.dockerignore
+compose.yaml

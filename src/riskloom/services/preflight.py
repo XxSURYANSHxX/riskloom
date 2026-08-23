@@ -6,11 +6,13 @@ after the claim succeeds is the event scored, and only then is an action attempt
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 
 import structlog
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from riskloom.db.models import ReviewItem
@@ -208,6 +210,44 @@ async def evaluate_preflight(
     if occurred_at is not None:
         decision, order_id = await _act(decision, request, orders, budget)
 
+    # The one window where a storage failure has an external consequence: an ALLOW may already
+    # have created a real order upstream, and if this write fails that order exists with no ledger
+    # record of it. The caller still gets 503 rather than an ALLOW it cannot back, so the decision
+    # stays fail-closed; what is added here is a distinct, reconcilable identity carrying the order
+    # id. There is deliberately no auto-recovery, consistent with the rest of this path.
+    try:
+        await _finalise_ledger(session, row, request, decision, probability, occurred_at, order_id)
+    except SQLAlchemyError:
+        logger.error(
+            "preflight_ledger_write_failed",
+            event_id=request.event_id,
+            razorpay_order_id=order_id,
+            action=decision.action.value,
+        )
+        raise
+
+    logger.info(
+        "preflight_decided",
+        event_id=request.event_id,
+        action=decision.action.value,
+        risk_decision=decision.risk_decision.value if decision.risk_decision else None,
+        fail_safe_reason=(decision.fail_safe_reason.value if decision.fail_safe_reason else None),
+        order_created=order_id is not None,
+    )
+    return _response(row, duplicate=False, decision_threshold=bundle.decision_threshold)
+
+
+async def _finalise_ledger(
+    session: AsyncSession,
+    row: RiskDecisionRow,
+    request: CheckoutPreflightRequest,
+    decision: Decision,
+    probability: float | None,
+    occurred_at: datetime | None,
+    order_id: str | None,
+) -> None:
+    """The single pending -> final transition, plus the review item when one is due."""
+
     async with session.begin():
         row.occurred_at = occurred_at or row.created_at
         row.calibrated_probability = _probability_decimal(probability)
@@ -230,13 +270,3 @@ async def evaluate_preflight(
                 )
                 .on_conflict_do_nothing(index_elements=[ReviewItem.risk_decision_id])
             )
-
-    logger.info(
-        "preflight_decided",
-        event_id=request.event_id,
-        action=decision.action.value,
-        risk_decision=decision.risk_decision.value if decision.risk_decision else None,
-        fail_safe_reason=(decision.fail_safe_reason.value if decision.fail_safe_reason else None),
-        order_created=order_id is not None,
-    )
-    return _response(row, duplicate=False, decision_threshold=bundle.decision_threshold)

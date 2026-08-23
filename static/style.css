@@ -418,3 +418,15 @@ button.generate {
 }
 button.generate:hover { border-color: var(--rl-calm); color: var(--rl-text); }
 button.generate:disabled { opacity: 0.5; cursor: default; }
+
+/* ---------------------------------------------------------------------- drift */
+/* Reuses the existing risk scale: an index is not a new kind of signal, so it gets no new hue. */
+.drift-head { display: flex; align-items: baseline; gap: 10px; padding: 12px 0 8px 0; }
+.drift-value {
+  font: 400 22px/1 var(--rl-font-mono); font-variant-numeric: tabular-nums;
+  color: var(--rl-text);
+}
+.drift-value.none { color: var(--rl-calm); }
+.drift-value.moderate { color: var(--rl-elevated); }
+.drift-value.significant { color: var(--rl-alert); }
+.drift-band { font: 400 11px/1 var(--rl-font-body); color: var(--rl-text-faint); }

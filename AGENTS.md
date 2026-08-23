@@ -328,3 +328,39 @@ named future work; reproduce the measurement with `riskloom.analysis.blindspot`.
   uniqueness claim taken before the outbound call. Automated tests must never make a real call.
 - The dashboard stays read-only apart from this single `POST`, which writes only
   `risk_decision_explanations`. Review-item mutation remains out of scope.
+
+## Resilience, drift, and packaging invariants
+
+- Failure-injection code proves existing behaviour; it must never implement a fail-safe. If a
+  scenario needs new production logic to pass, the gap is in production, not in the drill.
+- Keep `scripts/failure_drill.py` a client of the service. It must not reach around the API to
+  manipulate the database, and storage scenarios must ask the operator to interrupt the database
+  explicitly rather than doing it invisibly.
+- Preflight must fail closed on any storage failure: 503 `storage_unavailable`, never a 200 ALLOW
+  and never a partial ledger write. Catch `OSError` as well as `SQLAlchemyError` -- a frozen
+  database surfaces a bare `TimeoutError` that SQLAlchemy does not wrap, and without it the request
+  answers 500. A frozen database is not bounded server-side; do not claim otherwise.
+- If storage fails after an order was created, log `preflight_ledger_write_failed` with the order
+  id. The row stays `pending` and there is no auto-recovery.
+- `riskloom.drift` is informational only and must never influence a decision, a threshold, or a
+  model parameter. It holds no session and imports no ORM, so it cannot write to any table; all
+  querying lives in `riskloom.services.drift` and is read-only. Enforce isolation in both
+  directions with an AST check and a fresh-interpreter probe, and keep drift dependencies off the
+  shared `api/dependencies.py`.
+- The PSI reference comes only from the published per-bin counts in `evaluation.json`. Never open,
+  re-score, or re-derive the protected test partition.
+- `PSI_EPSILON` and `PSI_MINIMUM_ROWS` are load-bearing constants. The epsilon moves the result
+  across a band boundary, so changing it requires re-recording the sensitivity table asserted in
+  the tests. Never report a band below the minimum row count.
+- Always report per-bin contributions alongside the scalar. The locked reference is degenerate --
+  97.78% in one bin, five empty bins, the threshold inside the first bin -- so a lone number is
+  routinely dominated by one bin and reads as drift when it is not.
+- Never verify a PSI figure by trusting a previously written one. Recompute it from the formula and
+  cross-check against a second implementation; an earlier draft of this gate recorded exactly twice
+  the correct value by doubling the per-bin difference.
+- No secret may reach an image layer. `.dockerignore` excludes `.env`; secrets arrive through the
+  environment at runtime. A blank key counts as absent.
+- Migrations run in a one-shot `migrate` service that exits before the app starts. The application
+  never creates tables.
+- Locked artifacts are runtime inputs mounted read-only, never baked into the image and never
+  committed. Do not add a flag that skips startup model binding to make a fresh clone start.

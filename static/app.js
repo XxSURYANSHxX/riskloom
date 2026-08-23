@@ -132,6 +132,66 @@ async function loadCoordination() {
       `${graph.clustered_entity_count} shared entities across ${graph.decision_count} decisions`;
   }
   if (!state.modelLoaded) await loadModelPanel();
+  await loadDriftPanel();
+}
+
+/* -------------------------------------------------------------- drift panel */
+
+// Score-distribution stability against the locked held-out reference. Informational only: this
+// panel reads a number that was computed after the fact and can reach no decision.
+
+const DRIFT_BAND_LABEL = {
+  none: "no significant shift",
+  moderate: "moderate shift",
+  significant: "significant shift",
+};
+
+async function loadDriftPanel() {
+  const panel = document.getElementById("drift-panel");
+  if (!panel) return;
+  const result = await fetchJson(`${API}/drift`);
+  if (!result.ok) {
+    panel.innerHTML = `<div class="empty">Drift unavailable.</div>`;
+    return;
+  }
+  const d = result.data;
+
+  if (d.status === "reference_unavailable") {
+    panel.innerHTML =
+      `<div class="empty">No locked evaluation artifact in this checkout, so there is no
+       reference distribution to compare against.</div>`;
+    return;
+  }
+
+  if (d.status === "insufficient_data") {
+    // Deliberately no band and no number: a stability index from a handful of rows would be the
+    // most misleading figure on this screen.
+    panel.innerHTML = `
+      <div class="drift-head">
+        <span class="drift-value muted">insufficient data</span>
+      </div>
+      <div class="ctx"><span class="k">scored rows</span>
+        <span class="v">${d.observed_rows} / ${d.minimum_rows} needed</span></div>
+      <div class="ctx"><span class="k">window</span><span class="v">${d.window_hours}h</span></div>
+      <div class="ctx"><span class="k">reference</span>
+        <span class="v">${d.reference_rows.toLocaleString()} held-out rows</span></div>
+      <div class="ctx-note">${d.note}</div>`;
+    return;
+  }
+
+  const top = [...d.bins].sort((a, b) => b.contribution_share - a.contribution_share)[0];
+  panel.innerHTML = `
+    <div class="drift-head">
+      <span class="drift-value ${d.band}">${d.psi.toFixed(4)}</span>
+      <span class="drift-band ${d.band}">${DRIFT_BAND_LABEL[d.band]}</span>
+    </div>
+    <div class="ctx"><span class="k">scored rows</span><span class="v">${d.observed_rows}</span></div>
+    <div class="ctx"><span class="k">window</span><span class="v">${d.window_hours}h</span></div>
+    <div class="ctx"><span class="k">largest bin</span>
+      <span class="v">[${top.lower_inclusive.toFixed(1)}, ${top.upper_value.toFixed(1)})
+      · ${(top.contribution_share * 100).toFixed(0)}% of index</span></div>
+    <div class="ctx"><span class="k">epsilon</span><span class="v">${d.epsilon}</span></div>
+    <div class="ctx-note">${d.note}</div>`;
 }
 
 async function loadModelPanel() {
