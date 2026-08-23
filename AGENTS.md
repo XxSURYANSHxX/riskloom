@@ -364,3 +364,60 @@ named future work; reproduce the measurement with `riskloom.analysis.blindspot`.
   never creates tables.
 - Locked artifacts are runtime inputs mounted read-only, never baked into the image and never
   committed. Do not add a flag that skips startup model binding to make a fresh clone start.
+
+## Adversarial stress invariants
+
+- Gate H0 scores the locked Day 4 model and never changes it. No retraining, no re-locking, no
+  re-thresholding, and no reopening of the held-out partition or `evaluation.json`. The analysis
+  package must not import sklearn, `riskloom.modeling.training`, or `riskloom.modeling.data`.
+- Keep `riskloom.analysis` offline and unreachable from `riskloom.serving`, `riskloom.services` and
+  `riskloom.policy`, enforced with an AST check and a fresh-interpreter probe in both directions.
+- Adding any field to `GeneratorConfig` is the most dangerous change in this repository: schema
+  1.1.0 namespaces every PRNG stream by a fingerprint over the whole configuration, so a stray key
+  changes every identifier and every drawn value in the locked datasets. A new field must be gated
+  behind a new configuration schema version and removed from `effective_configuration` for all
+  older versions, exactly as 1.0.0 removes `campaign_placement`.
+- Schema 1.2.0 maps to the unchanged 1.1.0 algorithm. Do not invent an algorithm version for a
+  change that did not alter identifier construction or stream derivation.
+- Any change touching generation must prove `development` still fingerprints to `140ecd643528fadc…`
+  and `policy-validation` to `88ec3bd4ee9540b2…`, and that regenerating `smoke` reproduces dataset
+  id `5f8e96be454b50ea…` byte for byte.
+- Every evasion branch in `_campaigns` must be strictly conditional and consume no RNG when absent.
+  One unconditional draw shifts the shared stream and silently changes every existing dataset.
+- The evasion shape applies to the test split only. Train and calibration stay baseline, both
+  because the dataset's entity-rotation and network-coordination invariants require it and because
+  they serve as the within-dataset control that makes the result attributable.
+- Hold attack volume and prevalence constant across variants. A detection drop must not be
+  explainable by fewer attacks or a different base rate.
+- Every variant must be shown to have measurably reshaped the feature family it targets. A variant
+  that silently generates ordinary traffic reports a comfortable null that reads as robustness.
+- Reference rows are read from their source artifacts at run time. No reference figure may appear as
+  a literal anywhere in `riskloom/analysis`, and a missing artifact reports unavailable rather than
+  falling back. Gate C1's artifact records no average precision; report null, never the figure
+  quoted in prose elsewhere.
+- Report adversarial results as measured. Never regenerate, reseed or retune a variant to improve
+  the numbers, and never quote Gate B2's held-out recall as robustness against shaped attacks.
+
+### Known limitation: the locked model is evadable by boundary-spaced traffic
+
+- Gate H0 measured the locked Day 4 model against four evasion shapes and found recall collapsing
+  from 0.9765 (Gate B2 held-out) to between 0.00 and 0.12, with cost rising roughly tenfold.
+  `window-edge` spacing is a complete evasion: 0 of 120 attack events and 0 of 20 campaigns, with
+  mean attack probability 0.0018 against 0.0092 for legitimate traffic, so no threshold placement
+  could separate them. Treat these as established facts about this model, not open questions.
+- The cause is specific and mechanistic, not a general model weakness. Rolling windows use a
+  left-exclusive `(current_time - window, current_time]` cutoff, so an event exactly one window back
+  is expired. Attempts spaced at exactly 60s, 300s or 3600s therefore place every prior event on the
+  excluded boundary and every `*_prior_attempt_count_*` feature reads zero. The same model detects
+  baseline-shaped attacks in the same file at 83-87%.
+- That figure is the theoretical ceiling of the exploit: deterministic spacing, no jitter, full
+  knowledge of the feature schema. Never present 0.00 recall as what an evasive attacker generally
+  achieves, and never cite it as evidence the modelling approach is unsound.
+- The fix is understood and deliberately not implemented: overlapping or staggered windows, a
+  secondary longer-horizon window that boundary spacing cannot evade simultaneously, or treating
+  suspiciously regular inter-event timing as a detection signal in its own right. Any of these
+  requires a feature-schema version increment and a retrained, re-locked model, which is its own
+  gate. Do not patch the boundary rule inside the locked schema.
+- Quote Gate B2's 0.9765 as detection of attacks shaped like the training data. Alongside the Day 4
+  decision-boundary tie-cluster, the Day 6 live-serving blind spot and the Day 9 PSI degeneracy,
+  this is a measured and disclosed limitation; keep it disclosed.

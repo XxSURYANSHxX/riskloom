@@ -1,0 +1,52 @@
+{
+  "config_schema_version": "1.2.0",
+  "controlled_test_shift": {
+    "maximum_unique_network_ratio_basis_points": 5000,
+    "minimum_network_presence_basis_points": 9000,
+    "minimum_unique_entity_ratio_multiplier": 2
+  },
+  "currency": "INR",
+  "dataset_profile": "adversarial-stress",
+  "entity_pools": {
+    "customers": 2700,
+    "devices": 2160,
+    "instruments": 3600,
+    "networks": 720
+  },
+  "merchant_count": 12,
+  "splits": [
+    {
+      "campaign_count": 2,
+      "campaign_profile": "baseline_reuse",
+      "duration_days": 2,
+      "event_count": 2000,
+      "name": "train"
+    },
+    {
+      "campaign_count": 4,
+      "campaign_placement": {
+        "maximum_sampling_attempts_per_campaign": 4096,
+        "minimum_campaigns_after_boundary": 2,
+        "minimum_campaigns_before_boundary": 2,
+        "minimum_gap_seconds": 300,
+        "protected_boundary_basis_points": 5000
+      },
+      "campaign_profile": "baseline_reuse",
+      "duration_days": 2,
+      "event_count": 1000,
+      "name": "calibration"
+    },
+    {
+      "campaign_count": 20,
+      "campaign_profile": "entity_reuse_shift",
+      "duration_days": 4,
+      "evasion_shape": {
+        "network_count": 2,
+        "variant": "distributed_thin"
+      },
+      "event_count": 6000,
+      "name": "test"
+    }
+  ],
+  "start_at": "2026-06-01T00:00:00Z"
+}

@@ -23,6 +23,7 @@ secrets/
 /artifacts/models/
 /artifacts/evaluations/
 /artifacts/policy/
+/artifacts/analysis/
 dist/
 build/
 .idea/

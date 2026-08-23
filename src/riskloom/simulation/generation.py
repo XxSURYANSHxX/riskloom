@@ -648,7 +648,15 @@ class SimulationGenerator:
             else self._campaign_windows(split, start, end)
         )
         channels = self._channels(count, rng)
-        outcomes = self._outcomes(count, self.config.outcome_rates.attack_failure, rng)
+        # Failure camouflage is decided here, before the campaign loop, because outcomes are drawn
+        # for the whole split at once. An attacker working from pre-validated cards produces the
+        # legitimate failure rate rather than the 75% that card testing normally leaves behind.
+        split_evasion = split.evasion_shape
+        attack_failure_rate = self.config.outcome_rates.attack_failure
+        if split_evasion is not None and split_evasion.variant == "failure_camouflage":
+            assert split_evasion.failure_rate_basis_points is not None
+            attack_failure_rate = split_evasion.failure_rate_basis_points
+        outcomes = self._outcomes(count, attack_failure_rate, rng)
         records: list[GeneratedRecord] = []
         event_index = 0
         for campaign_index, size in enumerate(sizes):
@@ -658,15 +666,32 @@ class SimulationGenerator:
             )
             merchant_count = min(len(self.merchants), rng.randint(2, min(4, len(self.merchants))))
             campaign_merchants = rng.sample(self.merchants, merchant_count)
+            # Every evasion branch below is strictly conditional and draws no random values when
+            # absent. `rng` is one shared stream for the whole campaign loop, so a single
+            # unconditional draw here would shift every subsequent value and silently change the
+            # development, smoke and policy-validation datasets.
+            evasion = split.evasion_shape
             shared_network = self._identifier(
                 "net", "campaign-network", split.name.value, campaign_index
             )
+            campaign_networks = [shared_network]
+            if evasion is not None and evasion.variant == "distributed_thin":
+                assert evasion.network_count is not None
+                campaign_networks = [
+                    self._identifier(
+                        "net", "campaign-network", split.name.value, campaign_index, index
+                    )
+                    for index in range(evasion.network_count)
+                ]
             baseline_devices = max(1, (size + 11) // 12)
             device_count = (
                 min(size, baseline_devices * 4)
                 if split.campaign_profile is CampaignProfile.ENTITY_REUSE_SHIFT
                 else baseline_devices
             )
+            if evasion is not None and evasion.variant == "distributed_thin":
+                # One device per event: the reuse the detector keys on simply is not there.
+                device_count = size
             devices = [
                 self._identifier(
                     "dev",
@@ -684,10 +709,41 @@ class SimulationGenerator:
                 window = windows[campaign_index]
                 duration_ms = window.duration_ms
                 window_start = window.start
+            if evasion is not None:
+                # A stretched or exactly-spaced campaign needs more room than the 30-90 minutes the
+                # window was sized for, so the start is pulled back to keep every event inside its
+                # split. `event_outside_labeled_split` is a hard dataset invariant; sliding the
+                # start is preferable to truncating the campaign, which would silently reduce the
+                # attack volume and make a detection drop unattributable.
+                if evasion.variant == "slow_and_low":
+                    assert evasion.duration_minutes is not None
+                    duration_ms = evasion.duration_minutes * 60 * 1_000
+                    required_ms = duration_ms
+                elif evasion.variant == "window_edge":
+                    assert evasion.edge_window_seconds is not None
+                    required_ms = max(0, size - 1) * evasion.edge_window_seconds * 1_000
+                else:
+                    required_ms = duration_ms
+                latest_start = end - timedelta(milliseconds=required_ms + 1)
+                if window_start > latest_start:
+                    window_start = max(start, latest_start)
+                room_ms = int((end - window_start).total_seconds() * 1_000) - 1
+                duration_ms = max(1, min(duration_ms, room_ms))
             missing_device_count = (size * self.config.missingness_rates.device + 5_000) // 10_000
             missing_network_count = (size * self.config.missingness_rates.network + 5_000) // 10_000
             missing_device_indices = set(rng.sample(range(size), missing_device_count))
             missing_network_indices = set(rng.sample(range(size), missing_network_count))
+            # Deterministic offsets only for the window-edge variant. Everything else keeps
+            # drawing inline below, at exactly the point in the loop the original did, so the
+            # shared stream's interleaving with the other per-event draws is untouched.
+            offsets_ms: list[int] | None = None
+            if evasion is not None and evasion.variant == "window_edge":
+                # Exactly one window apart, so at each event the previous one sits precisely on the
+                # expiry cutoff. Windows are (current_time - window, current_time], left-exclusive,
+                # so an event exactly one window back is already gone and the count reads zero.
+                assert evasion.edge_window_seconds is not None
+                step_ms = evasion.edge_window_seconds * 1_000
+                offsets_ms = [index * step_ms for index in range(size)]
             for local_index in range(size):
                 merchant = campaign_merchants[local_index % len(campaign_merchants)]
                 device: str | None = devices[local_index % len(devices)]
@@ -705,7 +761,7 @@ class SimulationGenerator:
                     self.config.missingness_rates.customer,
                     rng,
                 )
-                network: str | None = shared_network
+                network: str | None = campaign_networks[local_index % len(campaign_networks)]
                 if local_index in missing_network_indices:
                     network = None
                 outcome, failure = outcomes[event_index]
@@ -713,7 +769,14 @@ class SimulationGenerator:
                     split=split,
                     scenario="campaign",
                     index=event_index,
-                    occurred_at=window_start + timedelta(milliseconds=rng.randrange(duration_ms)),
+                    occurred_at=window_start
+                    + timedelta(
+                        milliseconds=(
+                            rng.randrange(duration_ms)
+                            if offsets_ms is None
+                            else offsets_ms[local_index]
+                        )
+                    ),
                     merchant_id=merchant,
                     checkout_id=self._identifier(
                         "chk", "campaign-checkout", split.name.value, event_index

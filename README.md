@@ -806,6 +806,178 @@ which files are missing before anything is started.
   enormous "drift" that says nothing about the model. A useful version would compare the deny rate
   among *scored* rows only, with its own minimum-sample guard. That is future work.
 
+## Gate H0 adversarial stress test
+
+Every evaluation before this one scored the model against traffic from the same simulator design it
+was trained against: campaigns of 30-90 minutes, about twelve events per device, one shared network
+each, and a 75% failure rate. Gate H0 asks the question the project had not asked itself — how the
+**already-locked, never-retrained** Day 4 model behaves against attack traffic shaped specifically
+to defeat the mechanisms it relies on.
+
+What was tested, precisely:
+
+- The locked Day 4 artifact, unchanged. No retraining, no re-locking, no re-thresholding, and the
+  held-out partition and `evaluation.json` were never reopened.
+- Scoring through **portable JSON inference** against that artifact, with features from the
+  unmodified Day 3 engine — the same path every other gate uses.
+- Four evasion-shaped synthetic attack variants, generated under a separate `adversarial-stress`
+  profile with a new seed (20260921) and a time window (from 2026-06-01) disjoint from both
+  development and policy-validation.
+- A **within-file baseline-versus-evasive control**, not merely a cross-dataset comparison. The
+  evasion shape is applied to the test split only, so each file's own train and calibration splits
+  are ordinary traffic from the same generator, same seed and same configuration. Without this, a
+  low score could not be attributed to the evasion rather than to the dataset simply being shaped
+  differently from the held-out one.
+
+### Results
+
+| Row | rows | attacks | recall | precision | AP | FPR | cost |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Gate B2 held-out | 17,000 | 340 | **0.9765** | 0.7685 | 0.9640 | 0.60% | 300 |
+| Gate C1 policy-validation | 9,000 | 180 | 0.8556 | 0.5768 | n/a | 1.28% | 763 |
+| H0 `slow-low` | 6,000 | 120 | **0.0333** | 0.0460 | 0.0168 | 1.41% | 2,983 |
+| H0 `window-edge` | 6,000 | 120 | **0.0000** | 0.0000 | 0.0202 | 1.29% | 3,076 |
+| H0 `distributed` | 6,000 | 120 | **0.1167** | 0.2059 | 0.0610 | 0.92% | 2,704 |
+| H0 `failure-camouflage` | 6,000 | 120 | **0.0667** | 0.1481 | 0.0441 | 0.78% | 2,846 |
+
+Recall collapses from 0.9765 to between 0.00 and 0.12. Cost rises roughly tenfold, from 300 units to
+2,704-3,076. `window-edge` achieves **complete evasion**: zero of 120 attack events and zero of 20
+campaigns detected. On that variant the mean calibrated probability for attacks is **0.0018 against
+0.0092 for legitimate traffic** — the model rates the evasive attacks as *less* risky than ordinary
+customers, so no threshold placement anywhere could have separated them.
+
+These numbers are reported as measured. No variant was regenerated, reseeded or retuned.
+
+### The four variants
+
+| Variant | Mechanism attacked | What changes |
+| --- | --- | --- |
+| `slow-low` | velocity counts in the 60s/300s/3600s windows | campaign stretched from ~30 min to 24 h |
+| `window-edge` | the left-exclusive `(t - w, t]` cutoff | events spaced at *exactly* 3600s |
+| `distributed` | device and network reuse concentration | one device per event, networks doubled |
+| `failure-camouflage` | the 18 failure-derived features | campaign failure rate 75% → 8% |
+
+Attack **volume** is held identical across all four, so a detection drop cannot be explained by
+there being less to detect. Two further vectors were considered and rejected on evidence rather than
+omitted: amount camouflage would test nothing, because `_amount` is scenario-independent and attack
+amounts already match the legitimate distribution for the same merchant; and instrument rotation
+would change nothing, because campaign instruments are already unique per event.
+
+### The control, and why `window-edge` is a named mechanism rather than a general weakness
+
+| Variant | baseline attacks (same file) | evasive attacks |
+| --- | --- | --- |
+| `slow-low` | recall 0.8667, mean p 0.603 | recall 0.0333, mean p 0.0077 |
+| `window-edge` | recall 0.8667, mean p 0.644 | recall 0.0000, mean p 0.0018 |
+| `distributed` | recall 0.8333, mean p 0.596 | recall 0.1167, mean p 0.0830 |
+| `failure-camouflage` | recall 0.8667, mean p 0.614 | recall 0.0667, mean p 0.0357 |
+
+Baseline-shaped attacks *in the very same file* are detected at **83-87%**, with mean attack
+probability around 0.60. The datasets are perfectly scoreable and the model works on them. The
+evasion is what defeats it.
+
+**The `window-edge` result has a specific, understood, mechanistic cause.** The causal feature
+engine's rolling windows use a left-exclusive cutoff — `(current_time - window, current_time]`, so
+an event sitting exactly one window back is already expired and is not counted. An attacker who
+spaces attempts at exactly the window length (60s, 300s, or 3600s) therefore places every prior
+event precisely on the excluded boundary, and every `*_prior_attempt_count_*` feature reads zero no
+matter how many attempts have actually occurred.
+
+That is a named property of one implementation detail in `riskloom.features`, not a general
+statement that the model cannot detect card testing. The same model, on the same file, detects
+baseline-shaped attacks at 87%. The distinction matters: this is a fixable boundary-condition bug in
+the feature engine, not evidence that the modelling approach is unsound.
+
+**This is the theoretical ceiling of the exploit, not a typical attack.** The `window-edge` traffic
+is spaced at exactly the window length, deterministically, with no jitter, generated with full
+knowledge of the feature schema. It is the best case for the attacker and the worst case for the
+detector. A real attacker without the schema, or with any timing jitter at all, would leave events
+inside the window and be counted normally. **The 0.00 recall figure must not be read as what an
+evasive attacker generally achieves** — it is what a perfectly-informed attacker achieves against
+this one boundary rule.
+
+### The fix, named but not implemented
+
+The boundary condition is well understood and has three credible remedies, any of which would close
+it. None is implemented here, because Gate H0's scope is measurement and the Day 4 model is locked:
+
+1. **Overlapping or staggered windows.** Maintaining a second set of windows offset by half their
+   length means an event on the boundary of one window falls in the middle of another, so no single
+   spacing can sit on every cutoff at once.
+2. **A secondary longer-horizon window.** Spacing at exactly 3600s defeats the 3600s window but
+   would be trivially visible to, say, a 24-hour counter — an attacker cannot simultaneously sit on
+   the boundary of two windows whose lengths are not multiples of one another.
+3. **Treating regular inter-event timing as its own signal.** Perfectly uniform spacing is itself
+   extraordinarily unlikely in legitimate traffic. The very regularity that defeats the counters is
+   a strong detection feature in its own right, and cheap to compute.
+
+Any of these requires a feature-schema version increment and a retrained, re-locked model, which is
+a deliberate gate of its own rather than a patch.
+
+### How this sits alongside the project's other disclosures
+
+This is consistent with standing practice here rather than an isolated admission. The project has
+repeatedly measured and published its own weaknesses:
+
+- **Day 4 decision-boundary tie-cluster.** The locked threshold sits one unit in the last place
+  above a cluster of eight `policy_selection` rows, so portable inference allows rows the training
+  report recorded as denied. Documented, monitored by a non-fatal `validate-model` diagnostic, and
+  deliberately not papered over by re-locking the artifact.
+- **Day 6 live-serving blind spot.** Quantified rather than assumed: replaying 9,000 events under
+  the live outcome assumption moves recall 0.856 → 0.600 and cost 763 → 2,279 (+199%), so Gate B2's
+  held-out numbers must not be quoted as live-serving accuracy.
+- **Day 9 PSI degeneracy.** The locked reference concentrates 97.78% of rows in one bin, leaves five
+  empty, and puts the decision threshold *inside* the most populated bin, so the drift surface
+  refuses to report a band below 200 rows and always shows per-bin contributions.
+
+Gate H0 adds the fourth: **Gate B2's 0.9765 describes detection of attacks shaped like the training
+data, and should be quoted that way.**
+
+### Known limitations of this gate
+
+- **Synthetic evasion traffic, not a held-out measurement.** Nothing here says how a real attacker
+  behaves, only how this model responds to these four shapes.
+- **Recall on 120 attacks carries about four percentage points of sampling noise.** Read the large
+  movements; ignore small ones.
+- **`distributed` had the least room to work.** The test split already uses the entity-rotation
+  campaign profile, and the dataset's own `attack_network_coordination_too_sparse` invariant caps
+  unique attack networks at half the attack count. It is the mildest variant for that reason, not
+  because reuse features are the most robust.
+- **The evasion applies to the test split only.** Applying it everywhere would violate the entity
+  rotation and network coordination invariants the dataset contract enforces — which is precisely
+  what makes the within-file control available.
+- **Gate C1's row carries no average precision.** That artifact records counts, rates and cost but
+  not AP, so the cell is null rather than borrowed from prose elsewhere.
+
+### Running it
+
+```powershell
+uv run python -m riskloom.simulation generate --config configs/simulation/adversarial-stress-slow-low.json --seed 20260921 --output artifacts/simulations/adversarial-slow-low
+uv run python -m riskloom.features extract --events artifacts/simulations/adversarial-slow-low/events.jsonl --config configs/features/default.json --output-dir artifacts/features/adversarial-slow-low
+# ... repeat for window-edge, distributed, failure-camouflage
+uv run python -m riskloom.analysis adversarial-stress --output-dir artifacts/analysis/adversarial-stress
+```
+
+### How the existing datasets are protected
+
+Adding a field to the generator configuration is the most dangerous change available in this
+repository: every schema 1.1.0 PRNG stream is namespaced by a fingerprint computed over the whole
+configuration, so a stray `"evasion_shape": null` would change every identifier and every drawn value
+in the development dataset the locked model was trained on.
+
+Two independent protections. The field exists only in **configuration schema 1.2.0**, which only the
+`adversarial-stress` profile may use, so an older config carrying it is rejected outright. And
+`effective_configuration` removes it for every older version, exactly as 1.0.0 already removes
+`campaign_placement`. Schema 1.2.0 maps to the **unchanged 1.1.0 algorithm**, because identifier
+construction and stream derivation did not change and claiming a new algorithm version would assert
+a change that never happened.
+
+Verified after the change: `development` still fingerprints to `140ecd643528fadc...`,
+`policy-validation` to `88ec3bd4ee9540b2...`, and regenerating `smoke` end to end still produces
+dataset id `5f8e96be454b50ea...` with identical `events.jsonl` and `labels.jsonl` hashes. All three
+Day 4 model hashes and `evaluation.json` are unchanged.
+
+
 ## Prerequisites
 
 - Python 3.11
