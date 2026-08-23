@@ -1,0 +1,14 @@
+# Canonical artifacts and configurations are byte-exact by design. Three configuration files are
+# read through a canonical-bytes validator that rejects any CR and requires a trailing LF
+# (configs/modeling/default.json and both configs/policy/*.json), so a Windows checkout under the
+# default core.autocrlf=true silently rewrites "}\n" to "}\r\n" and the service refuses to start.
+#
+# Every stored blob is already LF, so pinning the checkout is the whole fix.
+* text=auto eol=lf
+
+# Binary assets must never be line-ending converted.
+*.woff2 binary
+*.pyd   binary
+*.png   binary
+*.jpg   binary
+*.ico   binary

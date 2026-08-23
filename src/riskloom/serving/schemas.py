@@ -88,7 +88,7 @@ class PreflightDecisionResponse(BaseModel):
 
     Deliberately excluded: the computed feature vector, engine state or diagnostics, any other
     merchant's or checkout's data, upstream Razorpay response bodies, and anything credential
-    bearing. Explanations and reason codes are a later gate.
+    bearing. Explanations are generated separately, on their own endpoint, after the fact.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)

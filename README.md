@@ -1,1064 +1,317 @@
 # RiskLoom
 
-RiskLoom is a defense-only, shadow-mode risk-management backend for detecting coordinated
-card-testing activity. Day 1 establishes secure Razorpay test-mode webhook ingestion and an
-internal Orders API adapter. It does not score, block, capture, or otherwise decide payments.
+**A defense-only, shadow-mode AI risk manager for coordinated card-testing fraud.**
+Built for the Razorpay AI Buildathon, Track 02.
 
-Day 2 adds an isolated deterministic simulator for privacy-safe checkout-attempt domain events
-and an in-process event replayer. It does not send requests, execute payments, persist simulation
-data to PostgreSQL, or expose another API route.
+Card testing is defined by *reuse*: one attacker driving many small authorization attempts across
+shared devices, networks and instruments to find live cards. RiskLoom detects that shape. It scores
+a live checkout attempt against a locked, calibrated model using 75 causal features computed from
+event history, writes an append-only audit ledger, and surfaces the result on an operations
+dashboard with an LLM-written explanation of *why*.
 
-The generated artifacts are synthetic evaluation fixtures, not observations of real fraud or
-payment traffic. RiskLoom makes no production fraud-accuracy claim from these datasets.
+It is shadow-mode by construction. RiskLoom never captures, refunds, or blocks a payment. A DENY
+means no Razorpay order is created; nothing else in the payment flow is touched. Every external
+integration is test-mode only, and live-mode API keys are rejected at startup.
 
-## Day 1 capabilities
+---
 
-- Python 3.11 FastAPI modular monolith.
-- PostgreSQL persistence through SQLAlchemy 2 and Alembic.
-- Exact-raw-body Razorpay webhook HMAC-SHA256 verification.
-- Database-enforced idempotency using `X-Razorpay-Event-Id`.
-- Append-only payment observations that tolerate out-of-order delivery.
-- Allowlisted audit projections and exact-body SHA-256 digests; raw bodies are never persisted.
-- Internal-only Razorpay test-mode Orders client using httpx.
-- Structured logs, liveness/readiness checks, and PostgreSQL integration tests.
+## Held-out results
 
-## Day 2 deterministic simulation
+Measured once, on a held-out partition the model had never seen, through the same portable
+inference path the live service uses:
 
-The `riskloom.simulation` package produces four canonical UTF-8/LF artifacts. JSON is compact and
-key-sorted, identifiers are UUIDv5 values serialized through `uuid.hex`, and rates are integer
-ratios plus fixed-decimal strings. Given Python 3.11, the same seed, generator/config versions, and
-effective configuration, every artifact is byte-identical regardless of the output directory.
-
-- `events.jsonl` contains strict model-visible synthetic checkout-attempt events only.
-- `labels.jsonl` contains the separately typed evaluation truth joined one-to-one by `event_id`.
-- `report.json` contains sorted aggregate counts, ratios, and reuse summaries without raw IDs.
-- `manifest.json` contains versions, effective configuration, dataset identity, split boundaries,
-  and SHA-256 metadata for the other three files. It intentionally does not hash itself.
-
-Only `event_id` is globally unique. Merchant, checkout, customer, device, network, session, and
-payment-instrument tokens are deliberately reusable so the data can represent legitimate retries,
-flash sales, shared infrastructure, ordinary failures, and harmless coordinated-risk patterns.
-The test split uses a controlled entity-reuse shift that exists only in test labels and generated
-entity relationships, never as a model-visible marker.
-
-That shift has one fixed direction and deterministic policy. For attacks, the test split must have
-at least twice the unique-device-per-attack-event ratio and twice the
-unique-session-per-attack-event ratio of both train and calibration. Validation uses integer
-cross-products, so the reciprocal attack-events-per-device and attack-events-per-session ratios
-must decrease without floating-point comparisons. Network coordination remains concentrated in
-every split: unique attack networks may be at most 5,000/10,000 of attack events and at least
-9,000/10,000 attack events must retain a network token. These thresholds are part of the effective
-configuration and report; payment instruments are not used to define the shift.
-
-The built-in profiles allocate every scenario by exact integer event counts in every chronological
-split; generation never rounds or samples scenario quotas.
-
-| Profile | Train | Calibration | Test | Total | Timeline |
-| --- | ---: | ---: | ---: | ---: | --- |
-| Smoke | 1,400 | 300 | 300 | 2,000 | 6 UTC days (4/1/1) |
-| Development | 66,000 | 17,000 | 17,000 | 100,000 | 30 UTC days (20/5/5) |
-
-Each split is exactly 70% normal, 8% legitimate retry, 12% flash sale, 5% shared
-infrastructure, 3% legitimate failure, and 2% attack-labelled campaign events. Retry chains and
-campaigns consume exactly their assigned event quotas.
-
-Day 2.1 preserves configuration and algorithm `1.0.0` byte-for-byte, including its UUID namespace,
-PRNG draw order, campaign construction, canonical artifacts, and validation of historical
-datasets. Schema `1.1.0` is used for the development profile's calibration placement. Its canonical
-effective-configuration SHA-256 is recorded in the manifest and binds every UUID and independent
-PRNG stream, so changing output-affecting configuration with the same seed changes the generated
-identity and data. The tracked development contract rejects changes to its approved split quotas,
-campaign profiles, controlled test shift, or placement settings before generation.
-
-Schema `1.1.0` profile contracts are selected from the effective configuration, never from a file
-or directory name. `development` is the exact locked 100,000-event contract. Generic `smoke`
-fixtures are limited to 3,000 total events, 1,400 events and 28 attacks per split, 60 attacks total,
-six total days and four days per split, and ten campaigns per split. Protected placement is further
-limited to five campaigns per side and 4,096 sampling attempts per campaign. These are the smallest
-ceilings that retain the tracked six-day smoke shape and the reduced 3,000-row irregular-placement
-test profile while preventing a relabelled development-scale configuration. Loading, generation
-preflight, and artifact validation all apply the same profile-contract validator. Algorithm `1.0.0`
-retains its historical configuration behavior and bytes.
-
-Every public generation path first dumps the supplied configuration in Python mode, reconstructs a
-fresh strict `GeneratorConfig`, and uses only that isolated snapshot. This occurs before output-path
-inspection or staging, so post-construction mutation, schema downgrade, unknown fields, and invalid
-numeric types fail without changing the destination.
-
-The ten development calibration campaigns contain exactly 34 attack events each. Five complete
-campaigns occur before a protected timestamp and five occur at or after it; none crosses it. The
-timestamp is computed with integer milliseconds as
-`calibration_start + floor(calibration_duration_ms * 6000 / 10000)`. Campaign windows are sampled
-from independent seeded streams across the full permitted intervals, with no equal periodic slots.
-They cannot overlap and must retain at least a five-minute gap. These are construction controls for
-synthetic evaluation data, not operational payment-testing instructions.
-
-Generate the smoke profile with reserved synthetic data:
-
-```powershell
-uv run python -m riskloom.simulation generate `
-  --config configs/simulation/smoke.json `
-  --seed 20260820 `
-  --output-dir artifacts/simulations/smoke
-```
-
-Generate the larger development artifact only as a deliberate manual check, not in pytest:
-
-```powershell
-uv run python -m riskloom.simulation generate `
-  --config configs/simulation/development.json `
-  --seed 20260820 `
-  --output-dir artifacts/simulations/development-v1.1.0-config-bound-a
-```
-
-Generated datasets under `artifacts/simulations/` are ignored by Git. Generation refuses unsafe
-root/repository output targets, non-empty destinations, symlinked destinations, and overwrite of
-unknown files. `--overwrite` is accepted only for a directory containing the four recognized
-RiskLoom artifacts whose existing manifest, hashes, canonical bytes, report, and schemas all
-validate. Files are validated in a sibling staging directory, then published with the manifest
-last. The manifest is a completeness marker; publication is not a fully atomic four-file
-filesystem transaction, and interrupted or partial publication fails later validation.
-
-Replay model-visible events locally with no delay:
-
-```powershell
-uv run python -m riskloom.simulation replay `
-  --events artifacts/simulations/smoke/events.jsonl `
-  --timing no-delay
-```
-
-Replay is in-process and event-only. It has no label argument or import, HTTP/socket/URL target,
-Razorpay adapter, retry, or remote transport. Scaled timing is bounded and intended for tests with
-an injected fake clock; do not wait through a real multi-day dataset timeline.
-
-Simulation events cannot contain PAN, CVV/CVC, expiry, email, phone/contact, address, VPA/UPI ID,
-IP address, raw payload, names, or arbitrary free-form fields. Strict schemas reject unknown keys,
-and validation recursively checks the explicit prohibited-field denylist. Safe synthetic tokens
-are typed and prefixed; `payment_instrument_token` is explicitly allowed. The generator has no
-name field, name configuration, or name-generation dependency/code path. Labels may be inspected
-only to validate construction and evaluate future work; Day 2 does not add model training.
-
-## Day 3 causal temporal features
-
-The isolated `riskloom.features` package converts the chronological model-visible Day 2 event
-stream into exactly 75 integer-valued temporal, velocity, and coordination features. It does not
-read labels, split boundaries, scenarios, campaigns, generator metadata, or the Day 2 manifest.
-It does not expose an endpoint, persist features, contact a network, score risk, train a model, or
-make a payment decision.
-
-For an event at time `t`, a window of `W` seconds contains only already processed events satisfying
-`t - W < prior_time <= t`. An event exactly `W` seconds old is expired. Previously processed events
-at the same timestamp are included in deterministic event-ID order. Processing always validates
-and evicts first, computes and validates the current feature record from prior state, then updates
-state with the current event. The current outcome can therefore affect only future feature rows.
-
-The version 1.0.0 schema contains:
-
-| Family | Features |
+| Metric | Value |
 | --- | ---: |
-| Safe current-event amount/time/channel/missingness | 9 |
-| Checkout retry history within 3,600 seconds | 3 |
-| Merchant rolling history | 15 |
-| Device rolling history | 12 |
-| Network rolling history | 15 |
-| Instrument rolling history | 10 |
-| Session rolling history | 6 |
-| Prior 300-second failure rates in integer basis points | 5 |
-| **Total** | **75** |
+| Recall | **0.9765** |
+| Precision | **0.7685** |
+| Average precision | **0.9640** |
+| ROC-AUC | 0.9886 |
+| False-positive rate | **0.60%** |
+| Cost (FN×25 + FP×1) | 300 units |
+| Rows / attacks | 17,000 / 340 |
 
-Rolling windows are locked to 60, 300, and 3,600 seconds. Deques bound observation state by event
-time, and reference-counted relationship counters preserve exact distinct counts during eviction.
-Missing devices and networks never share a null bucket. Checkout history also expires after 3,600
-seconds. Failure rates use floor integer arithmetic and return zero when no prior attempt exists.
+**Read that number honestly.** It describes detection of attacks shaped like the training data. A
+later gate deliberately attacked the detector's own mechanisms and drove recall to between 0.00 and
+0.12 — see [Known limitations](#known-limitations-and-honest-disclosures), which leads with that
+finding rather than burying it.
 
-Extract and validate smoke features:
+The data is synthetic. RiskLoom makes no production fraud-accuracy claim.
+
+---
+
+## Architecture
+
+```
+                          ┌──────────────────────────────────────────┐
+   Razorpay test-mode ───▶│ webhook ingest  HMAC · idempotent · redacted
+                          └──────────────────────────────────────────┘
+                                            │ append-only observations
+                                            ▼
+  ┌────────────────┐   events    ┌────────────────────┐   75 features
+  │  simulator     │────────────▶│  causal feature    │───────────────┐
+  │  deterministic │             │  engine  (Day 3)   │               │
+  └────────────────┘             └────────────────────┘               ▼
+                                       compute-before-update   ┌──────────────┐
+                                       sliding 60/300/3600s    │ locked model │
+                                                               │  + threshold │
+                                                               └──────────────┘
+                                                                      │
+   POST /checkout/preflight ──▶ claim → score → act → finalise ───────┘
+        │                        (idempotent, fail-safe to REVIEW)
+        │                                   │
+        │                                   ├──▶ Razorpay order (ALLOW only, capped)
+        │                                   └──▶ risk_decisions ledger (append-only)
+        ▼                                              │
+   ALLOW / REVIEW / DENY                               ▼
+                                    ┌───────────────────────────────────┐
+                                    │ dashboard (read-only)             │
+                                    │  stream · coordination · ledger   │
+                                    │  case detail + LLM explanation    │
+                                    │  PSI drift (informational)        │
+                                    └───────────────────────────────────┘
+
+   offline only, unreachable from any decision:
+     policy engine (built, neither candidate approved) · adversarial stress · blind-spot analysis
+```
+
+Isolation is enforced, not intended. Static AST checks plus fresh-interpreter probes assert that
+the decision path cannot reach the policy engine, the drift module, the explanation generator or the
+offline analysis packages — and that none of them can reach it.
+
+---
+
+## Run it
+
+**You need two things: this repository, and the generated-artifact bundle.**
+
+A `git clone` alone **cannot** start the service. The locked model, its manifest and the feature
+manifest are deliberately excluded from version control — committing them would misrepresent
+generated artifacts as source, and regenerating them elsewhere would produce a *different* model and
+break every hash in this document. They are inputs, supplied alongside the clone.
 
 ```powershell
-uv run python -m riskloom.features extract `
-  --events artifacts/simulations/smoke/events.jsonl `
-  --config configs/features/default.json `
-  --output-dir artifacts/features/smoke
-
-uv run python -m riskloom.features validate `
-  --events artifacts/simulations/smoke/events.jsonl `
-  --config configs/features/default.json `
-  --input-dir artifacts/features/smoke
-```
-
-The output contains canonical `features.jsonl`, aggregate-only `report.json`, and `manifest.json`.
-The manifest records the exact source-events SHA-256, effective feature configuration, versions,
-row count, sizes, and hashes of the feature and report files. It does not hash itself or contain a
-path, timestamp, label, seed, or split. Dataset identity depends on the exact source bytes and
-canonical effective configuration, not the output directory.
-
-Feature rows contain only `event_id`, `occurred_at`, and the exact 75-key integer feature mapping.
-They never emit current outcome, failure category, currency, entity tokens, labels, truth,
-campaign data, split values, scores, thresholds, decisions, or predictions. Reports contain only
-integer aggregate distributions and aggregate state-size diagnostics.
-
-Extraction and validation stream source events and feature rows without retaining full datasets in
-memory. Exact percentile frequency counters retain integer frequencies only. Existing output can
-be replaced with `--overwrite` only when it is already a fully valid RiskLoom feature dataset for
-the same source bytes and configuration. Staging and manifest-last publication provide a
-completeness marker, not a fully atomic three-file transaction. Generated features under
-`artifacts/features/` are ignored and must not be committed. Generate the 100,000-row development
-artifact only as an explicit manual verification command:
-
-```powershell
-uv run python -m riskloom.features extract `
-  --events artifacts/simulations/development-v1.1.0-config-bound-a/events.jsonl `
-  --config configs/features/default.json `
-  --output-dir artifacts/features/development-v1.1.0-config-bound
-```
-
-## Day 4 offline model locking
-
-The isolated `riskloom.modeling` package trains two fixed tabular candidates against the exact
-approved development artifacts: standardized logistic regression and conservative gradient
-boosting. NumPy and scikit-learn are runtime dependencies only for offline fitting and independent
-validation; the locked model is canonical, data-only JSON and never pickle, cloudpickle, joblib, or
-executable estimator state.
-
-The modeling configuration pins every source identity and hash, all candidate and Platt-calibrator
-parameters (including `random_state`), the fixed 1:25 false-positive/false-negative cost policy,
-feature order, and the calibration boundary. The source simulation must be profile `development`,
-generator/configuration 1.1.0, and the exact approved effective-configuration fingerprint. Labels
-are validated through the Day 2 manifest and exact label-file hash; model training never opens raw
-events.
-
-Calibration is divided only by timestamp at
-`calibration_start + floor(calibration_duration_ms * 6000 / 10000)`. Rows strictly before the
-timestamp form `calibration_fit`; equal or later rows form `policy_selection`. The approved data
-currently yields 9,048 and 7,952 rows respectively, with 170 attacks and five complete campaigns
-on each side. Preprocessing, balanced weights, and both candidates fit on train only. Platt
-calibration fits on calibration-fit only. Candidate and threshold selection use policy-selection
-only. Average precision and trapezoidal PR-AUC are reported as distinct metrics.
-
-Policy reports include row/class counts, prevalence, confusion counts, precision, recall,
-specificity, F1, false positives per 10,000 legitimate events, review workload, configured cost,
-ranking metrics, Brier score, log loss, and fixed ten-bin reliability/ECE results. Legitimate
-scenario slices report false-positive counts, rates, per-10,000 rates, and abstract cost units;
-empty slices use `null` rates. Campaign summaries retain completely missed campaigns as zero
-flagged events and report campaign recall plus first-attack-to-first-flag delay in integer
-milliseconds. These metrics describe synthetic data only and are not production accuracy or
-merchant-loss claims.
-
-Point the commands at directories whose manifests match the exact identities pinned in
-`configs/modeling/default.json`. In the current local verification workspace, those approved bytes
-are in the `development-v1.1.0-config-bound-a` simulation directory and
-`development-v1.1.0-config-bound` feature directory:
-
-```powershell
-uv run python -m riskloom.modeling train `
-  --simulation-dir artifacts/simulations/development-v1.1.0-config-bound-a `
-  --feature-dir artifacts/features/development-v1.1.0-config-bound `
-  --config configs/modeling/default.json `
-  --output-dir artifacts/models/development
-
-uv run python -m riskloom.modeling validate-model `
-  --simulation-dir artifacts/simulations/development-v1.1.0-config-bound-a `
-  --feature-dir artifacts/features/development-v1.1.0-config-bound `
-  --config configs/modeling/default.json `
-  --model-dir artifacts/models/development
-```
-
-Training discards held-out feature rows and never accesses or validates held-out targets.
-`validate-model` first validates the locked canonical artifact, independently retrains from
-train/calibration data, compares byte identity, and then may use a bounded deterministic sample of
-held-out features only for sklearn/portable inference parity. Training reports contain aggregate
-train, calibration-fit, and policy-selection results only—never raw identifiers, predictions,
-held-out counts, or held-out metrics.
-
-The `evaluate-test` command performs portable inference against an already locked model and has no
-fit path. The official development held-out evaluation has now been run exactly once against the
-locked `development` model. Over 17,000 held-out events at 2.0% attack prevalence, it reaches 97.6%
-recall and 76.9% precision at the locked threshold, with average precision 0.964. All three
-held-out campaigns were detected; that is a 3-of-3 denominator on a single synthetic split, not a
-general campaign-detection claim.
-
-Known limitation: two legitimate traffic patterns account for 90% of all false positives —
-`shared_infrastructure` (6.9% false-positive rate) and `legitimate_retry` (2.3%) — and the model is
-overconfident in the mid probability range, where the 0.4-0.8 reliability bins predict far higher
-risk than the observed attack rate in them. These figures describe synthetic data only and are not
-production accuracy or merchant-loss claims.
-
-Generated model and evaluation directories are ignored by Git, publication is manifest-last with no
-overwrite option, and a non-empty destination is always refused.
-
-Byte determinism is guaranteed only for the same Python, NumPy, scikit-learn and dependency-lock
-versions, exact source bytes, effective configuration, operating system, CPU/numerical environment,
-and fixed seeds. It is not claimed across CPU architectures, BLAS implementations, platforms, or
-dependency versions.
-
-### Decision-boundary diagnostic
-
-Parity between the fitted estimator and the portable JSON model is checked on probabilities, within
-`parity_absolute_tolerance`. That does not guarantee the two agree on the discrete decision. A
-gradient-boosting model with shallow trees can legitimately produce very few distinct calibrated
-probabilities on a skewed feature set -- the locked development model produces 15 distinct values
-across 7,952 `policy_selection` rows -- so probabilities arrive in large ties, and a threshold that
-lands on a tie-cluster boundary can flip every row in that cluster at once on a difference far
-smaller than the tolerance.
-
-The locked development threshold sits one unit in the last place above a cluster of eight
-`policy_selection` rows (one attack, seven legitimate). Portable inference allows those eight rows,
-while `training_report.json` recorded them as denied, so that report's `policy_selection` confusion
-matrix and portable-model behaviour differ by those eight rows.
-
-This is an internal-consistency gap only. **No published held-out evaluation number is affected.**
-Every figure in the Day 4 section above was computed through portable inference on the held-out
-partition and correctly describes deployed behaviour.
-
-Rather than retroactively re-locking an already-accepted and already-published artifact, the
-condition is now monitored. `validate-model` reports a non-fatal `decision_boundary` block naming
-whether the threshold is an observed probability, the nearest observed value below it, and the
-attack and legitimate row counts tied there. It is a diagnostic, never a pass or fail gate, and it
-exists so any future re-lock or retraining run surfaces the same condition before it is accepted.
-
-## Day 5 cost-aware policy band
-
-The isolated `riskloom.policy` package replaces Day 4's single ALLOW/DENY threshold with a
-three-tier ALLOW / REVIEW / DENY band. It never imports the simulation label module, directly or
-transitively, and its routing function takes a calibrated probability and a band, nothing else.
-Label-bearing orchestration lives in `riskloom.modeling.policy_ops`, where labels only ever score a
-decision that has already been made.
-
-Total cost extends the Day 4 function rather than replacing it:
-
-```
-total_cost = FN * false_negative_cost_units    (25, inherited and unchanged)
-           + FP * false_positive_cost_units    (1,  inherited and unchanged)
-           + N_review * review_cost_units      (3,  new abstract policy weight)
-```
-
-`N_review` counts every reviewed event regardless of its true label, because review is an
-operational cost incurred whether or not the transaction turns out to be fraud. All three weights
-are abstract units and none is a rupee-denominated claim. Both thresholds are fitted on
-`policy_selection` by a deterministic sweep over observed probabilities that always includes the
-incumbent threshold, so the band can always express the existing policy exactly.
-
-Counterfactual validation uses a separate `policy-validation` profile with its own locked contract,
-a seed used by no prior gate, and a window running 2026-03-01 to 2026-03-12 -- entirely after the
-development window that ends 2026-01-31. The loader refuses any batch whose dataset ids, artifact
-hashes, or configuration fingerprint match the locked development contract.
-
-```powershell
-uv run python -m riskloom.simulation generate `
-  --config configs/simulation/policy-validation.json `
-  --seed 20260905 `
-  --output-dir artifacts/simulations/policy-validation
-
-uv run python -m riskloom.features extract `
-  --events artifacts/simulations/policy-validation/events.jsonl `
-  --config configs/features/default.json `
-  --output-dir artifacts/features/policy-validation
-
-uv run python -m riskloom.modeling fit-policy-band `
-  --simulation-dir artifacts/simulations/development-v1.1.0-config-bound-a `
-  --feature-dir artifacts/features/development-v1.1.0-config-bound `
-  --config configs/modeling/default.json `
-  --model-dir artifacts/models/development `
-  --policy-config configs/policy/default.json `
-  --output-dir artifacts/policy/bands/development
-
-uv run python -m riskloom.modeling validate-policy `
-  --band-dir artifacts/policy/bands/development `
-  --validation-simulation-dir artifacts/simulations/policy-validation `
-  --validation-feature-dir artifacts/features/policy-validation `
-  --config configs/modeling/default.json `
-  --model-dir artifacts/models/development `
-  --policy-config configs/policy/default.json `
-  --output-dir artifacts/policy/comparisons/development
-```
-
-The banded policy never auto-activates. Approval requires the explicit `--approve` flag and is
-refused whenever the band fails to beat the incumbent cost, exceeds the configured
-false-positive-rate ceiling (default 100 basis points, configurable per merchant), or the
-validation batch falls below the configured minimum of 2,000 rows and 100 attacks.
-
-On the current fresh validation batch the fitted band beat the incumbent on cost -- 741 against 763
-abstract units across 9,000 events -- but was refused approval because its false-positive rate of
-132 basis points exceeds the 100 basis point ceiling. The incumbent policy also exceeds that
-ceiling on the same batch, at 128 basis points. The fitted band additionally has an empty review
-tier: with a false positive costing 1 unit and a review costing 3, denying is always cheaper than
-reviewing, so a review tier can never be cost-optimal at these inherited weights. Making the review
-tier reachable would require rescaling the cost units, which is a deliberate future decision rather
-than something this gate tunes for.
-
-## Day 6 live checkout-preflight scoring
-
-`POST /api/v1/checkout/preflight` scores a single live checkout attempt and acts on it. This is a
-deliberate expansion of the API surface, which previously held at two health routes and the webhook.
-
-The decision uses the locked Day 4 model and its single `decision_threshold` only. Neither Gate C1
-policy band takes part in any real decision, and an isolation test proves `riskloom.policy` is not
-reachable from the live path even transitively.
-
-```
-probability >= decision_threshold  ->  DENY   (no order created)
-otherwise                          ->  ALLOW  (create a Razorpay test-mode order)
-```
-
-REVIEW is an operational fail-safe tier rather than a risk band. It is reached only when a decision
-cannot be safely completed -- feature computation failed, scoring failed, order creation failed, or
-the process order budget is exhausted -- and the ledger records the underlying `risk_decision`
-separately from the `action` so the downgrade stays auditable.
-
-The order budget (`razorpay_max_orders_per_process`, default 5) counts order-creation *attempts*
-rather than successes: it is reserved before the upstream call, so an attempt Razorpay rejects
-still consumes one unit. That is the safer direction, since what needs bounding is outbound calls
-to a payment provider, but it does mean the counter can exceed the number of orders that actually
-exist.
-
-Live features come from the unmodified Day 3 `FeatureEngine`, held warm in one process-wide
-instance behind a single lock. The lock covers server-side timestamp assignment and the engine call
-only; order creation and database writes happen outside it. State is **in-memory only and does not
-survive a restart** -- after a restart the engine is cold and history features read zero until live
-traffic rebuilds them. At startup the service refuses to run unless the running feature
-configuration matches the effective configuration in the locked feature manifest, that manifest's
-hash matches the one pinned in the modeling configuration, and the model's feature order matches
-the live schema.
-
-Every decision is recorded in the append-only `risk_decisions` ledger with pseudonymous fields
-only; REVIEW additionally creates a `review_items` row. There is no auto-resolution of review items.
-
-```powershell
-uv run alembic upgrade head
-uv run uvicorn riskloom.main:app --host 127.0.0.1 --port 8000
-```
-
-### Known limitation: live-serving accuracy is not measured to held-out standard
-
-At preflight an attempt's outcome does not exist yet, so the online adapter advances feature state
-with every attempt recorded as authorized. The 57 outcome-independent features are identical
-between training and serving; the 18 failure-derived features read low for live traffic.
-
-This has been measured rather than assumed. Replaying the 9,000-event policy-validation batch
-through the locked model under both assumptions -- true outcomes, as offline training saw them,
-versus every state-advancing outcome forced to authorized, as live serving assumes -- gives:
-
-| Metric | True outcomes | Assumed authorized | Delta |
-| --- | ---: | ---: | ---: |
-| Recall | 0.8556 | 0.6000 | -0.2556 |
-| Precision | 0.5768 | 0.1840 | -0.3928 |
-| False-positive rate | 1.28% | 5.43% | +4.15 pp |
-| Average precision | 0.4384 | 0.5746 | +0.1362 |
-| ROC-AUC | 0.9260 | 0.8194 | -0.1066 |
-| Total cost (FN*25 + FP*1) | 763 | 2,279 | +1,516 (+199%) |
-| Attacks missed | 26 | 72 | +46 |
-
-The degradation is material: under the live assumption the same locked model misses 2.8x as many
-attacks and costs roughly three times as much. Average precision rises while every threshold-based
-metric falls, because the blind spot shifts the score distribution rather than uniformly worsening
-the ranking, leaving the fixed locked threshold badly placed for that distribution.
-
-**Gate B2's held-out figures describe offline scoring with true outcomes and must not be quoted as
-live-serving accuracy.** Webhook-driven failure reconciliation, which would close this gap, is named
-future work and is not in this gate. The measurement is reproducible through
-`riskloom.analysis.blindspot`.
-
-## Day 7 risk-operations dashboard
-
-A read-only operations view over data the earlier gates already write. It adds no computation, no
-mutation path and no trust boundary: every figure it shows was decided and stored elsewhere, and
-the dashboard only projects it. Five GET endpoints under `/api/v1/dashboard` serve JSON, and a
-static client is mounted at `/dashboard`.
-
-```powershell
-uv run alembic upgrade head
-uv run uvicorn riskloom.main:app --host 127.0.0.1 --port 8000
-# then open http://127.0.0.1:8000/dashboard
-```
-
-The client is hand-written ES modules with no build step and no framework, and it deliberately
-holds no logic worth testing. Grouping, sizing, formatting and graph layout are computed in Python
-and covered by pytest; the client draws what it is given. The one number it contributes is the
-measured pixel size of the graph panel, which it forwards as `canvas_width` and `canvas_height`
-because the server cannot otherwise know how wide the viewport is.
-
-| View | Shows |
-| --- | --- |
-| Stream | Newest decisions first, one line each, refreshed every 3s. Probabilities render at full precision -- the locked threshold carries nineteen significant decimals and a real tie-cluster sits one ULP below it, so rounding for display would erase the distinction the system is built around. |
-| Coordination | The shared-token graph: entities are hubs, decisions are the small nodes attached to them. Refreshed every 5s. |
-| Case detail | One decision's stored fields beside ledger-derived co-occurrence context. |
-| Ledger | The full filterable history, refreshed every 10s. |
-
-Updates are polled rather than pushed. Events only appear when a checkout attempt is posted, so a
-3-second poll already outpaces the event rate; SSE or WebSockets would add connection lifecycle and
-a second server code path for no gain at this scale, and remain the documented upgrade route.
-
-### The coordination graph is not campaign detection
-
-The two panels on the coordination view come from different places and mean different things. This
-distinction is load-bearing and the interface labels it in both directions.
-
-The **graph** is live and derived entirely from the ledger. A hub appears when a stored device,
-network or instrument token is shared by more than one decision; hub radius grows with the number
-of attached decisions and ring thickness with the number of distinct token kinds that co-occur.
-That is a projection of stored pseudonymous tokens, nothing more. **RiskLoom has no live campaign
-detection** -- no model, threshold or classifier decides that these decisions form a campaign, and
-the ledger has no campaign column. Shared tokens are evidence an operator interprets.
-
-The **side panel** is offline and static. Its campaign figures are read from
-`artifacts/evaluations/development/evaluation.json`, the Gate B2 held-out evaluation, which was
-computed against ground-truth simulation labels that do not exist for live traffic. Those numbers
-describe how the locked model performed on a historical labelled dataset. They are never recomputed
-from live data, never updated by traffic, and must not be read as a claim about the events drawn to
-their left.
-
-Ledger co-occurrence counts on the case-detail view are likewise structural context, not model
-features. The 75-feature vector is not stored, and recomputing it would be wrong -- the engine's
-rolling state has moved on, so a recomputed vector would differ from the one the decision used. No
-feature name is displayed anywhere in the dashboard.
-
-### Known limitations
-
-- **No authentication.** Every dashboard endpoint is unauthenticated and the client ships no login.
-  This is acceptable only because the service is a local single-process build; the dashboard must
-  not be exposed on a network interface as it stands.
-- **No mutation path.** The dashboard is read-only in this gate. Review items surface only as
-  counts -- a pending total on the summary and a per-decision count on case detail -- and cannot be
-  listed, approved, resolved or overridden. No endpoint accepts anything but `GET`; every other verb
-  answers 405 at the router, which is enforcement by routing rather than convention. Making review
-  actionable is the natural next step, but it would pull the dashboard inside the safety boundary
-  Days 4-6 were held to, and that needs its own gate.
-- **`GET /api/v1/dashboard/model` returns 404 when the evaluation artifact is absent.** The
-  `artifacts/` tree is Git-ignored, so a fresh clone has no `evaluation.json` and this is an
-  ordinary state rather than an error. The endpoint 404s, the panel renders an explicit unavailable
-  state, and startup is unaffected.
-- **The dashboard reads the database the live path writes.** Queries are strictly read-only and no
-  transaction outlasts a single statement, but the two share one PostgreSQL instance.
-
-## Day 8 LLM-generated incident explanations
-
-A denied checkout can now carry a short natural-language explanation, generated by Gemini and
-grounded strictly in facts that were already computed and stored. The governing rule, carried from
-every prior gate: **the LLM explains, it never decides.** It has no path to `risk_decision`,
-`action`, `calibrated_probability`, `decision_threshold` or any other value in `risk_decisions`,
-and that is enforced structurally rather than promised.
-
-Generation is **lazy**: it happens when an operator asks for it from the case-detail view, never
-automatically. Eager generation was rejected on a structural ground rather than a preference.
-Producing prose inside the preflight path would require `riskloom.services.preflight` to import the
-explanation module, which this gate's isolation rule forbids; the two cannot both hold. It also
-keeps an external dependency out of the path that creates real Razorpay orders.
-
-### Only a finalised DENY is eligible
-
-REVIEW is never a risk band in this system. Its four causes are operational fail-safes, and a
-REVIEW row's `risk_decision` is either `NULL` (never scored) or `allow` -- **no REVIEW row ever
-carries a deny verdict**, so there is no risk narrative to explain. Asking a model to write prose
-about `order_budget_exhausted` produces a story about an internal quota counter in the register of a
-risk finding, which is worse than saying nothing.
-
-| Row | Treatment |
-| --- | --- |
-| `status = 'final'` and `risk_decision = 'deny'` | LLM explanation |
-| `action = 'review'` | Deterministic template from the `fail_safe_reason` enum. No API call |
-| `action = 'allow'` | Nothing |
-
-`status = 'final'` is defence in depth rather than a fix: preflight assigns `risk_decision` and
-`status = 'final'` inside one transaction, so a `pending` row cannot carry a deny verdict today.
-The predicate asserts it anyway, because it is exactly where that assumption would silently break.
-
-### The input contract has no injection surface
-
-Every field sent is a number, a bool, or a member of a closed enum. **Not one free-text field is
-sent**, so there is no substring of the payload a user can author. This is the anti-injection
-design: not a filter that strips dangerous input, but an input space in which no expressible input
-is dangerous.
-
-Sent: the calibrated probability and locked threshold at full stored precision, whether the
-probability exceeds the threshold, `risk_decision`, `action`, `fail_safe_reason`, `amount_subunits`,
-`currency`, `channel`, and the ledger co-occurrence counts already shown in case detail.
-
-Never sent: **any pseudonymous token**. `EntityAggregate` has no field capable of holding one, so a
-`dev_...` value cannot reach the model even by mistake. Event, checkout, merchant, session and
-instrument identifiers, order ids and absolute timestamps are likewise absent; `span_seconds`
-carries duration without pinning a moment. The prompt asks the model to write "this device".
-
-### Output is structured, cross-checked, then sanitised
-
-The model returns JSON against an enum-constrained schema, validated by Pydantic before anything is
-stored. `factors` is a **closed enum, not prose** -- the model selects codes and RiskLoom renders
-the human sentence from its own template and its own numbers, so an invented contributing factor is
-not filtered out, it is unrepresentable.
-
-Five stages, and failing any one stores `rejected` and displays nothing:
-
-1. **Schema.** Unknown key, missing field, wrong type or out-of-enum code fails here.
-2. **Factor support.** Every selected code must be entailed by the input. A model reporting prior
-   denials on a device whose `denied_count` is zero is rejected with `unsupported_factor`.
-3. **Numeral cross-check.** See below.
-4. **Forbidden content.** Pseudonymous token patterns, PII shapes, markup, `javascript:`.
-5. **Bounds.** Length caps on summary, caveat, factor count and total payload.
-
-### The numeral rule: lossless renderings only
-
-The rule is that **an exact, lossless re-rendering of a supplied value is permitted; a lossy
-approximation of it is not.** One rule governs every field rather than one rule per field.
-
-| Supplied | Accepted | Rejected |
-| --- | --- | --- |
-| `amount_subunits = 25000` | `25000`, `25,000`, `250.00`, `250` | `260.00` |
-| `span_seconds = 201` | `201`, and the parts `3` and `21` | `3.35`, `200` |
-| probability `0.007053679692244301` | that string verbatim; its exact percentage `0.7053679692244301` | `0.0071`, `0.71%`, `0.0070`, `0.007` |
-
-A *truthful but rounded* restatement is rejected exactly as an invented figure is, and truncation is
-rejected for the same reason rounding is. This is deliberate. The locked threshold carries nineteen
-significant decimals and Gate C1 established that a real tie-cluster of scored rows sits one unit in
-the last place below it. A panel permitting "roughly 0.71%" beside a threshold of
-`0.0033862949155182734` would reintroduce precisely the display rounding the project bans everywhere
-else. The prompt therefore asks for verbatim quotation or, preferably, qualitative wording -- both
-exact values are already rendered in full precision immediately above the panel.
-
-Cardinal number words from two upward are checked the same way. "one" and "a" are not, because they
-are overwhelmingly idiomatic and checking them would reject far more true statements than false
-ones. That limit is stated rather than hidden.
-
-### Fail-safe and isolation
-
-`failed` and `rejected` are distinct stored states: one is the model not answering, the other the
-model answering with something the checks refused to trust. Neither affects any decision, order or
-ledger row, and an integration test snapshots `risk_decisions` and `review_items` across a success,
-a failure and a rejection and asserts byte-equality. **There is no retry loop** -- a retry is a
-fresh, human-initiated request consuming one attempt and one unit of budget.
-
-Isolation is enforced in both directions, statically over the AST and transitively in a fresh
-interpreter. The generation package imports no ORM and holds no session, so it *cannot* write to
-`risk_decisions`: the capability is absent rather than withheld.
-
-### Bounded spend
-
-```powershell
-uv run alembic upgrade head
-uv run uvicorn riskloom.main:app --host 127.0.0.1 --port 8000
-```
-
-Three independent caps: `RISKLOOM_GEMINI_MAX_CALLS_PER_PROCESS` (default 5, counting *attempts*
-like the Razorpay order budget), three attempts per decision, and a uniqueness claim taken before
-any outbound call so a concurrent duplicate is refused rather than spending a second unit. Every
-call in the automated suite is faked; a guard test proves no test can construct an un-mocked client
-and that test settings carry no key.
-
-The client is a thin `httpx` adapter rather than the official `google-genai` SDK. The SDK is the
-current official package, but it brings six new runtime dependencies for a single POST, retries
-internally through tenacity, auto-discovers an ambient `GEMINI_API_KEY`, and raises exceptions that
-can carry upstream response bodies -- three behaviours that conflict with standing invariants. The
-wire format is confined to one module behind a `Protocol`, so swapping in the SDK later is a
-contained change.
-
-The model id is a single setting, `RISKLOOM_GEMINI_MODEL`, defaulting to `gemini-3.6-flash`. That
-default was not chosen from documentation: a probe call against the live API rejected
-`gemini-2.5-flash` with "no longer available to new users. Please update your code to use
-models/gemini-3.6-flash". Older ids such as `gemini-2.0-flash` are shut down entirely. Verify the
-current id before changing this value rather than trusting a published list.
-
-### Known limitations
-
-- **`POST` is a narrow exception to Day 7's read-only dashboard.** It writes exactly one row to
-  `risk_decision_explanations` and touches nothing else; it cannot alter a decision, create an order
-  or move a review item. Review-item mutation remains deferred.
-- **The explanation is enrichment, not evidence.** It is generated after the fact from stored
-  aggregates and played no part in the decision. The panel says so permanently.
-- **No API key means no generation.** Without `RISKLOOM_GEMINI_API_KEY` the endpoint answers 503 and
-  the panel reports the feature unconfigured. Startup is unaffected.
-- **Free-tier terms may permit training on submitted content.** This is exactly why the input
-  contract is aggregates and enums only: no token, no identifier and no timestamp leaves the process.
-
-## Day 9 failure injection, drift detection, and Docker packaging
-
-Three things: prove the resilience the earlier gates built by actually breaking a running instance,
-add score-drift visibility that can never influence a decision, and package the stack so it starts
-with one command.
-
-### Failure injection
-
-Nothing in this gate re-implements a fail-safe. Every behaviour below already existed; what was
-missing was any way to *watch* it happen.
-
-```powershell
-uv run python scripts/failure_drill.py --base-url http://127.0.0.1:8000 `
-  --scenario all --webhook-secret $env:RISKLOOM_RAZORPAY_WEBHOOK_SECRET --verbose
-```
-
-The drill is a client of the service and never reaches around it. Storage scenarios ask you to
-interrupt the database yourself (`docker compose pause postgres`) rather than doing it invisibly.
-`tests/failure_injection/` runs the same scenarios in-process for CI.
-
-| Scenario | Proven behaviour |
-| --- | --- |
-| Duplicate webhook replay | Five deliveries of one provider event id produce one business effect |
-| Out-of-order replay | A late `authorized` after an early `captured` is stored as a distinct fact; both survive, correctly ordered |
-| Storage unavailable mid-preflight | 503 `storage_unavailable`, no partial ledger state, never a 200 ALLOW |
-| Ledger write fails after an order exists | 503, the row stays `pending`, and `preflight_ledger_write_failed` carries the order id so the orphan is reconcilable |
-| Model file missing or corrupted | Startup refuses with a `serving_*` identity; the service does not serve |
-
-### What the storage drill actually found
-
-The DB fail-safe was already present -- `checkout.py` caught `SQLAlchemyError` and answered 503.
-Injecting a real outage against the container showed two things that reading the code had not.
-
-**A frozen database is not a refusing database.** `docker compose stop postgres` refuses
-connections and the request fails in **3.0s with 503**. `docker compose pause postgres` freezes the
-server process while the socket stays open, and the failure then surfaces as a bare `TimeoutError`
--- a subclass of `OSError`, which SQLAlchemy never wraps. That fell through to the generic handler
-and answered **500 `internal_error`**, which reads as "we broke" rather than "storage is gone". The
-handler now catches `OSError` as well, and both shapes answer 503.
-
-**The frozen case is still not bounded server-side.** An `asyncio.timeout` around the scoring path
-was added and does bound cancellable stalls, but it does not fire here: SQLAlchemy's greenlet
-bridge does not deliver the cancellation into asyncpg's blocked read, so the request unwinds only
-when the connection dies. Measured, the response time tracked the *client's* timeout exactly
-(60s -> 60s, 90s -> 90s, 120s -> 120s). The decision stays fail-closed either way -- 503, never an
-unbacked ALLOW, no partial state -- but the latency of the frozen case is a known limitation rather
-than a solved problem.
-
-### Drift: informational, and honest about a weak metric
-
-`GET /api/v1/dashboard/drift` reports the Population Stability Index of recent calibrated
-probabilities against the locked held-out reference, with a panel on the coordination view.
-
-```
-PSI = sum over bins of (actual_share - expected_share) * ln(actual_share / expected_share)
-```
-
-Bands are the standard convention: `< 0.1` no significant shift, `0.1`-`0.25` moderate, `> 0.25`
-significant. The reference is read from `artifacts/evaluations/development/evaluation.json` and
-nothing else -- **the protected test partition is never opened, re-scored or re-derived**, only the
-already-published per-bin counts.
-
-**The locked reference is degenerate for this purpose, and the surface is built around that rather
-than hiding it.** Of 17,000 held-out rows, 97.78% fall in the first bin, five bins are empty, and
-the locked threshold itself falls *inside* the first bin -- so the binning has almost no resolution
-where decisions actually happen. Three consequences:
-
-- **The zero-bin epsilon is load-bearing.** `ln(x/0)` is undefined, so empty shares are floored at
-  `PSI_EPSILON = 1e-4`. That choice moves the answer across a band boundary: on the same data, PSI
-  reads 0.0559 (no shift) at `1e-3` and 0.2122 (moderate) at `1e-6`. The constant is pinned, the
-  sensitivity is asserted in the tests, and it must not be changed without re-recording it.
-- **Small samples get no band at all.** Below `PSI_MINIMUM_ROWS = 200` the endpoint answers
-  `insufficient_data` with `psi: null`. A stability index computed from a 14-row ledger would be
-  the most misleading number on the screen.
-- **Per-bin contributions are always reported.** At demo scale a benign 414-row window reads PSI
-  0.1090 "moderate" -- and the breakdown shows bin `[0.9, 1.0)` contributing **94%** of it. That is
-  not drift; it is the reference containing ~2% attack traffic that the window does not. The scalar
-  alone would have been read as a warning.
-
-Drift is read-only in the strongest sense available: the `riskloom.drift` package holds no session
-and imports no ORM, so it *cannot* write to any table. Isolation is enforced in both directions,
-statically over the AST and transitively in a fresh interpreter, exactly as for the live decision
-path and the explanation package.
-
-### Docker
-
-```powershell
-uv run python scripts/preflight_check.py    # names any missing artifact first
-docker compose up --build -d
-# postgres healthy -> migrate exits 0 -> app healthy on http://127.0.0.1:8000
-```
-
-Migrations run in their own one-shot `migrate` service that exits before the app starts, keeping
-the standing rule that the application never creates tables. No secret is present at any image
-layer: `.dockerignore` excludes `.env`, and the Razorpay keys, optional Gemini key and database
-password all arrive through the environment at runtime. Both existing behaviours were confirmed
-inside the container: an **absent Gemini key still starts and serves**, and a non-`rzp_test_`
-Razorpay key **refuses to start**. A blank key now counts as absent -- `.env.example` ships the
-variable empty, so a fresh clone copying it would otherwise have built a client with an empty key
-that failed every call.
-
-### `git clone` is not enough to run this
-
-Every artifact the service binds to at startup is Git-ignored. `git ls-files artifacts/ configs/`
-returns **seven files, all configuration, and no model at all**:
-
-```
-artifacts/models/development/model.json               not tracked
-artifacts/models/development/manifest.json            not tracked
-artifacts/features/...-config-bound/manifest.json     not tracked
-```
-
-The container therefore exits with a `serving_*` identity rather than serving, which is correct
-fail-closed behaviour and a confusing first experience. There is no way around it that is not
-worse: committing the artifacts violates the project's own rules, regenerating them in-container
-would produce a *different* model and break the locked-artifact contract, and weakening the startup
-binding would destroy the property Day 6 was built around. **A startup flag to skip model binding
-must not be added.**
-
-Artifacts are therefore an input, mounted read-only at `./artifacts:/app/artifacts:ro`. A fresh
-clone needs the artifact bundle copied into place, and `scripts/preflight_check.py` names exactly
-which files are missing before anything is started.
-
-### Known limitations
-
-- **A frozen database is not bounded server-side.** Described above. A refusing database fails in
-  ~3s; a frozen one unwinds only when the connection dies.
-- **An orphaned order is possible.** If storage dies after an ALLOW created a Razorpay order, the
-  order exists with no ledger record. The caller still gets 503, the row stays `pending`, and the
-  order id is logged under `preflight_ledger_write_failed`. There is no auto-recovery, consistent
-  with the rest of this path.
-- **PSI here is a coarse instrument.** The locked binning cannot see movement near the decision
-  threshold, because the threshold lies inside the most populated bin. Treat a reading as a prompt
-  to look, never as a measurement of decision quality.
-- **Action-mix drift was considered and deliberately not built.** Comparing the live allow/review/
-  deny mix against the evaluation's flagged rate would compare incomparable things: live REVIEW is
-  an operational fail-safe with no offline analogue, so 11 of 14 ledger rows would register as
-  enormous "drift" that says nothing about the model. A useful version would compare the deny rate
-  among *scored* rows only, with its own minimum-sample guard. That is future work.
-
-## Gate H0 adversarial stress test
-
-Every evaluation before this one scored the model against traffic from the same simulator design it
-was trained against: campaigns of 30-90 minutes, about twelve events per device, one shared network
-each, and a 75% failure rate. Gate H0 asks the question the project had not asked itself — how the
-**already-locked, never-retrained** Day 4 model behaves against attack traffic shaped specifically
-to defeat the mechanisms it relies on.
-
-What was tested, precisely:
-
-- The locked Day 4 artifact, unchanged. No retraining, no re-locking, no re-thresholding, and the
-  held-out partition and `evaluation.json` were never reopened.
-- Scoring through **portable JSON inference** against that artifact, with features from the
-  unmodified Day 3 engine — the same path every other gate uses.
-- Four evasion-shaped synthetic attack variants, generated under a separate `adversarial-stress`
-  profile with a new seed (20260921) and a time window (from 2026-06-01) disjoint from both
-  development and policy-validation.
-- A **within-file baseline-versus-evasive control**, not merely a cross-dataset comparison. The
-  evasion shape is applied to the test split only, so each file's own train and calibration splits
-  are ordinary traffic from the same generator, same seed and same configuration. Without this, a
-  low score could not be attributed to the evasion rather than to the dataset simply being shaped
-  differently from the held-out one.
-
-### Results
-
-| Row | rows | attacks | recall | precision | AP | FPR | cost |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Gate B2 held-out | 17,000 | 340 | **0.9765** | 0.7685 | 0.9640 | 0.60% | 300 |
-| Gate C1 policy-validation | 9,000 | 180 | 0.8556 | 0.5768 | n/a | 1.28% | 763 |
-| H0 `slow-low` | 6,000 | 120 | **0.0333** | 0.0460 | 0.0168 | 1.41% | 2,983 |
-| H0 `window-edge` | 6,000 | 120 | **0.0000** | 0.0000 | 0.0202 | 1.29% | 3,076 |
-| H0 `distributed` | 6,000 | 120 | **0.1167** | 0.2059 | 0.0610 | 0.92% | 2,704 |
-| H0 `failure-camouflage` | 6,000 | 120 | **0.0667** | 0.1481 | 0.0441 | 0.78% | 2,846 |
-
-Recall collapses from 0.9765 to between 0.00 and 0.12. Cost rises roughly tenfold, from 300 units to
-2,704-3,076. `window-edge` achieves **complete evasion**: zero of 120 attack events and zero of 20
-campaigns detected. On that variant the mean calibrated probability for attacks is **0.0018 against
-0.0092 for legitimate traffic** — the model rates the evasive attacks as *less* risky than ordinary
-customers, so no threshold placement anywhere could have separated them.
-
-These numbers are reported as measured. No variant was regenerated, reseeded or retuned.
-
-### The four variants
-
-| Variant | Mechanism attacked | What changes |
-| --- | --- | --- |
-| `slow-low` | velocity counts in the 60s/300s/3600s windows | campaign stretched from ~30 min to 24 h |
-| `window-edge` | the left-exclusive `(t - w, t]` cutoff | events spaced at *exactly* 3600s |
-| `distributed` | device and network reuse concentration | one device per event, networks doubled |
-| `failure-camouflage` | the 18 failure-derived features | campaign failure rate 75% → 8% |
-
-Attack **volume** is held identical across all four, so a detection drop cannot be explained by
-there being less to detect. Two further vectors were considered and rejected on evidence rather than
-omitted: amount camouflage would test nothing, because `_amount` is scenario-independent and attack
-amounts already match the legitimate distribution for the same merchant; and instrument rotation
-would change nothing, because campaign instruments are already unique per event.
-
-### The control, and why `window-edge` is a named mechanism rather than a general weakness
-
-| Variant | baseline attacks (same file) | evasive attacks |
-| --- | --- | --- |
-| `slow-low` | recall 0.8667, mean p 0.603 | recall 0.0333, mean p 0.0077 |
-| `window-edge` | recall 0.8667, mean p 0.644 | recall 0.0000, mean p 0.0018 |
-| `distributed` | recall 0.8333, mean p 0.596 | recall 0.1167, mean p 0.0830 |
-| `failure-camouflage` | recall 0.8667, mean p 0.614 | recall 0.0667, mean p 0.0357 |
-
-Baseline-shaped attacks *in the very same file* are detected at **83-87%**, with mean attack
-probability around 0.60. The datasets are perfectly scoreable and the model works on them. The
-evasion is what defeats it.
-
-**The `window-edge` result has a specific, understood, mechanistic cause.** The causal feature
-engine's rolling windows use a left-exclusive cutoff — `(current_time - window, current_time]`, so
-an event sitting exactly one window back is already expired and is not counted. An attacker who
-spaces attempts at exactly the window length (60s, 300s, or 3600s) therefore places every prior
-event precisely on the excluded boundary, and every `*_prior_attempt_count_*` feature reads zero no
-matter how many attempts have actually occurred.
-
-That is a named property of one implementation detail in `riskloom.features`, not a general
-statement that the model cannot detect card testing. The same model, on the same file, detects
-baseline-shaped attacks at 87%. The distinction matters: this is a fixable boundary-condition bug in
-the feature engine, not evidence that the modelling approach is unsound.
-
-**This is the theoretical ceiling of the exploit, not a typical attack.** The `window-edge` traffic
-is spaced at exactly the window length, deterministically, with no jitter, generated with full
-knowledge of the feature schema. It is the best case for the attacker and the worst case for the
-detector. A real attacker without the schema, or with any timing jitter at all, would leave events
-inside the window and be counted normally. **The 0.00 recall figure must not be read as what an
-evasive attacker generally achieves** — it is what a perfectly-informed attacker achieves against
-this one boundary rule.
-
-### The fix, named but not implemented
-
-The boundary condition is well understood and has three credible remedies, any of which would close
-it. None is implemented here, because Gate H0's scope is measurement and the Day 4 model is locked:
-
-1. **Overlapping or staggered windows.** Maintaining a second set of windows offset by half their
-   length means an event on the boundary of one window falls in the middle of another, so no single
-   spacing can sit on every cutoff at once.
-2. **A secondary longer-horizon window.** Spacing at exactly 3600s defeats the 3600s window but
-   would be trivially visible to, say, a 24-hour counter — an attacker cannot simultaneously sit on
-   the boundary of two windows whose lengths are not multiples of one another.
-3. **Treating regular inter-event timing as its own signal.** Perfectly uniform spacing is itself
-   extraordinarily unlikely in legitimate traffic. The very regularity that defeats the counters is
-   a strong detection feature in its own right, and cheap to compute.
-
-Any of these requires a feature-schema version increment and a retrained, re-locked model, which is
-a deliberate gate of its own rather than a patch.
-
-### How this sits alongside the project's other disclosures
-
-This is consistent with standing practice here rather than an isolated admission. The project has
-repeatedly measured and published its own weaknesses:
-
-- **Day 4 decision-boundary tie-cluster.** The locked threshold sits one unit in the last place
-  above a cluster of eight `policy_selection` rows, so portable inference allows rows the training
-  report recorded as denied. Documented, monitored by a non-fatal `validate-model` diagnostic, and
-  deliberately not papered over by re-locking the artifact.
-- **Day 6 live-serving blind spot.** Quantified rather than assumed: replaying 9,000 events under
-  the live outcome assumption moves recall 0.856 → 0.600 and cost 763 → 2,279 (+199%), so Gate B2's
-  held-out numbers must not be quoted as live-serving accuracy.
-- **Day 9 PSI degeneracy.** The locked reference concentrates 97.78% of rows in one bin, leaves five
-  empty, and puts the decision threshold *inside* the most populated bin, so the drift surface
-  refuses to report a band below 200 rows and always shows per-bin contributions.
-
-Gate H0 adds the fourth: **Gate B2's 0.9765 describes detection of attacks shaped like the training
-data, and should be quoted that way.**
-
-### Known limitations of this gate
-
-- **Synthetic evasion traffic, not a held-out measurement.** Nothing here says how a real attacker
-  behaves, only how this model responds to these four shapes.
-- **Recall on 120 attacks carries about four percentage points of sampling noise.** Read the large
-  movements; ignore small ones.
-- **`distributed` had the least room to work.** The test split already uses the entity-rotation
-  campaign profile, and the dataset's own `attack_network_coordination_too_sparse` invariant caps
-  unique attack networks at half the attack count. It is the mildest variant for that reason, not
-  because reuse features are the most robust.
-- **The evasion applies to the test split only.** Applying it everywhere would violate the entity
-  rotation and network coordination invariants the dataset contract enforces — which is precisely
-  what makes the within-file control available.
-- **Gate C1's row carries no average precision.** That artifact records counts, rates and cost but
-  not AP, so the cell is null rather than borrowed from prose elsewhere.
-
-### Running it
-
-```powershell
-uv run python -m riskloom.simulation generate --config configs/simulation/adversarial-stress-slow-low.json --seed 20260921 --output artifacts/simulations/adversarial-slow-low
-uv run python -m riskloom.features extract --events artifacts/simulations/adversarial-slow-low/events.jsonl --config configs/features/default.json --output-dir artifacts/features/adversarial-slow-low
-# ... repeat for window-edge, distributed, failure-camouflage
-uv run python -m riskloom.analysis adversarial-stress --output-dir artifacts/analysis/adversarial-stress
-```
-
-### How the existing datasets are protected
-
-Adding a field to the generator configuration is the most dangerous change available in this
-repository: every schema 1.1.0 PRNG stream is namespaced by a fingerprint computed over the whole
-configuration, so a stray `"evasion_shape": null` would change every identifier and every drawn value
-in the development dataset the locked model was trained on.
-
-Two independent protections. The field exists only in **configuration schema 1.2.0**, which only the
-`adversarial-stress` profile may use, so an older config carrying it is rejected outright. And
-`effective_configuration` removes it for every older version, exactly as 1.0.0 already removes
-`campaign_placement`. Schema 1.2.0 maps to the **unchanged 1.1.0 algorithm**, because identifier
-construction and stream derivation did not change and claiming a new algorithm version would assert
-a change that never happened.
-
-Verified after the change: `development` still fingerprints to `140ecd643528fadc...`,
-`policy-validation` to `88ec3bd4ee9540b2...`, and regenerating `smoke` end to end still produces
-dataset id `5f8e96be454b50ea...` with identical `events.jsonl` and `labels.jsonl` hashes. All three
-Day 4 model hashes and `evaluation.json` are unchanged.
-
-
-## Prerequisites
-
-- Python 3.11
-- [uv](https://docs.astral.sh/uv/)
-- Docker Desktop with Linux containers
-
-No local PostgreSQL client is required.
-
-## Local setup
-
-```powershell
+# 1. Confirm the artifact bundle is in place. Names exactly what is missing if it is not.
+uv run python scripts/preflight_check.py
+
+# 2. Configure. The placeholders are valid for startup; real Razorpay test keys are only
+#    needed to create actual orders, and the Gemini key is optional.
 Copy-Item .env.example .env
-uv sync
-docker compose up -d --wait postgres
-uv run alembic upgrade head
-uv run uvicorn riskloom.main:app --reload --port 8000
+
+# 3. Bring up the full stack: postgres → migrations → app.
+docker compose up --build -d
+
+# 4. Open the dashboard.
+Start-Process http://127.0.0.1:8000/dashboard
 ```
 
-Replace the Razorpay placeholders in `.env` only when exercising the internal client or receiving
-test-mode webhooks. Live-mode key IDs are rejected during configuration validation.
+Prerequisites: [uv](https://docs.astral.sh/uv/), Docker Desktop with Linux containers. Python 3.11
+is fetched by uv; no local PostgreSQL client is required.
 
-PostgreSQL binds to host port `5432` by default. If that port is already in use, change both local
-values in the ignored `.env` file so Compose and the application continue to address the same port;
-for example:
+<details>
+<summary>Port already in use, or running without Docker</summary>
+
+Host ports `5432` and `8000` must be free. If either is taken, set both values in `.env` — Compose
+and the application must agree:
 
 ```dotenv
 RISKLOOM_DATABASE_URL=postgresql+asyncpg://riskloom:riskloom_local_only@127.0.0.1:5433/riskloom
 RISKLOOM_POSTGRES_PORT=5433
+RISKLOOM_APP_PORT=8001
 ```
 
-Keep `.env.example` at the documented `5432` default and use `.env` for machine-specific overrides.
+Keep `.env.example` at the documented defaults and use `.env` for machine-specific overrides.
 
-Check the service:
+To run the app on the host instead of in a container, start only the database and run the
+migrations and server yourself:
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/health/live
-Invoke-RestMethod http://127.0.0.1:8000/health/ready
+docker compose up -d --wait postgres
+uv run alembic upgrade head
+uv run uvicorn riskloom.main:app --port 8000
 ```
+
+On Windows, clone into a short path such as `C:\riskloom`. A deep path can exceed the 260-character
+limit and break loading of compiled dependencies.
+</details>
+
+### Score a checkout
+
+```powershell
+$body = @{
+  event_id = "evt_00000000000000000000000000000f01"
+  merchant_id = "mrc_00000000000000000000000000000001"
+  checkout_id = "chk_00000000000000000000000000000f01"
+  customer_token = $null
+  device_token = "dev_00000000000000000000000000000f01"
+  network_token = "net_00000000000000000000000000000f01"
+  session_token = "ses_00000000000000000000000000000f01"
+  payment_instrument_token = "pmt_00000000000000000000000000000f01"
+  amount_subunits = 25000; currency = "INR"; channel = "web"
+} | ConvertTo-Json
+
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/checkout/preflight `
+  -ContentType application/json -Body $body
+```
+
+Every token is a pseudonymous `prefix_<32 hex>` value; the request schema rejects anything else, and
+rejects any field that looks like PII. Repeat the call with the same `event_id` to see idempotency:
+the second response carries `"duplicate": true` and creates no second effect.
+
+---
 
 ## API
 
-- `GET /health/live` checks the process only.
-- `GET /health/ready` checks PostgreSQL connectivity.
-- `POST /api/v1/webhooks/razorpay` accepts signed Razorpay webhooks.
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/health/live` | process only |
+| GET | `/health/ready` | PostgreSQL connectivity |
+| POST | `/api/v1/webhooks/razorpay` | signed Razorpay webhooks |
+| POST | `/api/v1/checkout/preflight` | score one live checkout attempt |
+| GET | `/api/v1/dashboard/summary` | ledger counts and provenance |
+| GET | `/api/v1/dashboard/decisions` | paged decision rows |
+| GET | `/api/v1/dashboard/decisions/{id}` | one decision + ledger context |
+| GET | `/api/v1/dashboard/coordination` | shared-token graph |
+| GET | `/api/v1/dashboard/model` | offline held-out aggregates |
+| GET | `/api/v1/dashboard/drift` | PSI against the locked reference |
+| GET | `/api/v1/dashboard/decisions/{id}/explanation` | read a generated explanation |
+| POST | `/api/v1/dashboard/decisions/{id}/explanation` | generate one |
 
-There is deliberately no public order-creation endpoint. The Orders client is an internal adapter.
+There is deliberately no public order-creation endpoint; the Orders client is an internal adapter.
+The dashboard is read-only apart from that single explanation POST, which writes one enrichment row
+and can alter no decision. Every other verb on every dashboard path answers 405 by routing.
 
-## Webhook security and privacy
+---
 
-The webhook endpoint streams the request body into a bounded in-memory buffer. It verifies
-`X-Razorpay-Signature` against those exact bytes before JSON parsing. The bytes are then hashed and
-discarded when the request completes. They are never written to PostgreSQL, logs, temporary files,
-exceptions, or error reports.
+## Known limitations and honest disclosures
 
-Only a conservative allowlist of documented event and payment fields is retained. Unknown keys,
-free-form values, contact data, cardholder data, network addresses, card credentials, VPA data,
-notes, descriptions, token data, and acquirer data are excluded. Fixtures use reserved synthetic
-values only.
+Every limitation below was found by measuring this system rather than by reasoning about it, and
+each was published in the gate that found it. They are collected here so the picture is in one
+place. A system that knows precisely what it cannot do is the point, not an apology.
 
-## Migrations and tests
+### 1. The model is evadable by boundary-spaced traffic — recall 0.9765 → 0.00
+
+Attack traffic shaped to defeat the detector's own mechanisms drove recall from 0.9765 to between
+0.00 and 0.12, with cost rising roughly tenfold. Spacing attempts at *exactly* one feature window
+(3600s) achieved **complete evasion**: 0 of 120 events and 0 of 20 campaigns detected, with mean
+attack probability **0.0018 against 0.0092 for legitimate traffic** — the model rated the evasive
+attacks as *less* risky than ordinary customers.
+
+The cause is specific and mechanistic, not a general failure. Rolling windows use a left-exclusive
+`(t - w, t]` cutoff, so an event exactly one window back is already expired; spacing at the window
+length places every prior event on the excluded boundary and every attempt counter reads zero. The
+same model, on the same file, detects baseline-shaped attacks at **83–87%**.
+
+That figure is the exploit's theoretical ceiling — deterministic spacing, no jitter, full knowledge
+of the feature schema — and is **not** what an evasive attacker generally achieves. The fix is
+understood and deliberately not implemented: staggered windows, a longer-horizon window that
+boundary spacing cannot evade simultaneously, or treating suspiciously regular timing as its own
+signal. Any of those needs a schema increment and a re-locked model, which is its own gate.
+
+→ [Full analysis](docs/BUILD_LOG.md#gate-h0-adversarial-stress-test)
+
+### 2. Live-serving accuracy is not measured to held-out standard
+
+At preflight an attempt's outcome does not exist yet, so live serving advances feature state with
+every attempt recorded as authorized. The 57 outcome-independent features are exact; the 18
+failure-derived ones read low. Quantified, not assumed — replaying 9,000 events under both
+assumptions gives recall 0.856 → 0.600, precision 0.577 → 0.184, FPR 1.28% → 5.43%, and cost 763 →
+2,279 (**+199%**). Held-out numbers must not be quoted as live-serving accuracy.
+
+→ [Detail](docs/BUILD_LOG.md#known-limitation-live-serving-accuracy-is-not-measured-to-held-out-standard)
+
+### 3. The locked threshold sits one ULP above a tie cluster
+
+The model produces only 15 distinct calibrated probabilities across 7,952 selection rows, so
+probabilities arrive in large ties. The locked threshold lands one unit in the last place above a
+cluster of eight rows, so portable inference allows rows the training report recorded as denied. No
+published held-out number is affected — Gate B2 computed every figure through portable inference.
+Monitored by a non-fatal `validate-model` diagnostic rather than silently re-locked.
+
+→ [Detail](docs/BUILD_LOG.md#decision-boundary-diagnostic)
+
+### 4. Calibration is overconfident in the mid probability range
+
+The 0.4–0.8 reliability bins predict materially higher risk than they observe. Expected calibration
+error is low overall because almost all mass sits in the lowest bin, which hides the mid-band error.
+
+### 5. Drift detection is a coarse instrument
+
+PSI is computed against the locked held-out reference, which is degenerate for the purpose: 97.78%
+of rows fall in one bin, five bins are empty, and the decision threshold itself sits *inside* the
+most populated bin, so the binning has almost no resolution where decisions happen. The zero-bin
+epsilon is load-bearing — the same data reads 0.0559 ("no shift") at 1e-3 and 0.2122 ("moderate") at
+1e-6. The surface therefore reports no band at all below 200 rows and always shows per-bin
+contributions.
+
+### 6. A frozen database is not bounded server-side
+
+A database that *refuses* connections fails preflight in about 3s with 503. One that is *frozen*
+keeps its socket open and answers nothing, and neither the connect timeout nor an `asyncio.timeout`
+fires — SQLAlchemy's greenlet bridge does not deliver cancellation into asyncpg's blocked read, so
+the request unwinds only when the connection dies. It still answers 503 and never an unbacked
+ALLOW, so the decision stays fail-closed; the latency is not bounded.
+
+### 7. An orphaned Razorpay order is possible
+
+If storage dies after an ALLOW created an order, the order exists with no ledger record. The caller
+gets 503, the row stays `pending`, and the order id is logged under `preflight_ledger_write_failed`.
+There is no auto-recovery, by design.
+
+### 8. Neither cost-aware policy band was approved
+
+The banded policy beat the incumbent on cost but exceeded the configured false-positive-rate
+ceiling, so approval was refused and the incumbent single threshold remains in force. The comparison
+is published whether the policy wins or loses.
+
+### 9. Operational limits
+
+- **No authentication.** Every endpoint is unauthenticated; acceptable only for a local build.
+- **Live feature state is in-memory.** It does not survive a restart; history features read zero
+  until traffic rebuilds them.
+- **Review items cannot be worked.** They are recorded and counted, never resolved or overridden.
+- **Explanations are enrichment, never evidence.** Generated after the fact from stored aggregates,
+  with no path to any decision. Free-tier terms may permit training on submitted content, which is
+  precisely why the input contract carries only aggregates and enums.
+- **The coordination graph is not campaign detection.** It is a projection of shared stored tokens;
+  no model decides that those decisions form a campaign.
+
+---
+
+## Verification
+
+Everything below is expected to pass on a clean checkout with the artifact bundle in place.
 
 ```powershell
-uv run alembic upgrade head
-uv run alembic downgrade base
-uv run alembic upgrade head
-uv run alembic check
-uv run ruff format --check .
-uv run ruff check .
-uv run mypy src
+uv sync
+uv run ruff format --check . ; uv run ruff check . ; uv run mypy src
+uv run alembic upgrade head ; uv run alembic downgrade base
+uv run alembic upgrade head ; uv run alembic check
 uv run pytest --cov=riskloom --cov-report=term-missing --cov-fail-under=90
 ```
 
-Integration tests start an isolated PostgreSQL 16 container and never call Razorpay. Docker must be
-running. To stop the development database without deleting its volume:
+897 tests, 90% branch coverage. Integration tests start a disposable PostgreSQL 16 container and
+never call Razorpay or Gemini; every external call in the suite is faked.
 
-```powershell
-docker compose down
-```
+The four locked artifacts are pinned and verified at every gate:
 
-## Configuration
+| Artifact | SHA-256 |
+| --- | --- |
+| `model.json` | `3db8dafef643261c0df559cab632cfaf6fc45be54f38c1f4a621ef5af84039d4` |
+| `training_report.json` | `4ff96556f1df49d7c44c29703c328753a6ea0ef197410976100e84751943ea6d` |
+| `manifest.json` | `00aa16380eee1dcfa26fe9c89ed0eb8f866e75e98bd7a7ba89f9cc228c792f2e` |
+| `evaluation.json` | `11251cef0dade5d14d2d1a85fe3822126e01c2a354494dd09b720c679244c40d` |
 
-All application settings use the `RISKLOOM_` prefix. Secrets are represented as Pydantic
-`SecretStr` values and must not be interpolated into logs or exceptions. See `.env.example` for the
-complete local configuration surface.
+---
+
+## Deeper reading
+
+| Document | Contents |
+| --- | --- |
+| [docs/BUILD_LOG.md](docs/BUILD_LOG.md) | The day-by-day engineering record: every design decision, what was measured, what was rejected and why |
+| [AGENTS.md](AGENTS.md) | Durable engineering instructions and invariants for anyone changing this codebase |
+| [.env.example](.env.example) | The complete configuration surface |
+
+Settings use the `RISKLOOM_` prefix and secrets are `SecretStr` values that are never interpolated
+into logs or exceptions. Webhook bodies are verified against their exact raw bytes, hashed, and
+discarded; only an allowlisted projection is ever stored. Fixtures use reserved synthetic values
+only.

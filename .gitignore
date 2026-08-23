@@ -24,6 +24,9 @@ secrets/
 /artifacts/evaluations/
 /artifacts/policy/
 /artifacts/analysis/
+
+# Local agent instructions, intentionally not shared.
+CLAUDE.md
 dist/
 build/
 .idea/

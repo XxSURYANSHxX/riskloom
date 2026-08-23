@@ -421,3 +421,24 @@ named future work; reproduce the measurement with `riskloom.analysis.blindspot`.
 - Quote Gate B2's 0.9765 as detection of attacks shaped like the training data. Alongside the Day 4
   decision-boundary tie-cluster, the Day 6 live-serving blind spot and the Day 9 PSI degeneracy,
   this is a measured and disclosed limitation; keep it disclosed.
+
+## Repository and packaging invariants
+
+- `.gitattributes` pins `text=auto eol=lf` and must not be removed or weakened. Three configuration
+  files are read through a canonical-bytes validator that rejects any CR and requires a trailing
+  LF: `configs/modeling/default.json`, `configs/policy/default.json` and
+  `configs/policy/rescaled-experiment.json`. Without the pin, a Windows checkout under the default
+  `core.autocrlf=true` rewrites `}\n` to `}\r\n`, `load_modeling_config` raises
+  `modeling_configuration_not_canonical`, and the service refuses to start. The stored blobs are
+  already LF, so protecting checkout is the entire fix; do not "correct" the files at the source.
+- When adding a configuration file that is read byte-exactly, verify it survives a clone under
+  `core.autocrlf=true` before considering the change complete. Testing only the loader in the
+  working copy will not catch this class of defect.
+- `README.md` is judge-facing: what RiskLoom is, held-out results, architecture, how to run it, and
+  the consolidated disclosures. Day-by-day engineering detail belongs in `docs/BUILD_LOG.md`. Do not
+  append a new dated section to the README; add to the build log and, if the change carries a
+  limitation, add it to the README's consolidated list.
+- Every limitation discovered by measurement is published. Keep them in one consolidated section
+  rather than scattered, keep the numbers that were actually measured, and lead with the most
+  significant. Never quote a held-out figure as robustness against shaped attacks.
+- `CLAUDE.md` is ignored and must stay ignored.
