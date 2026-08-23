@@ -84,6 +84,28 @@ class DecisionDetail(_Model):
     review_pending: bool
 
 
+class ExplanationView(_Model):
+    """A generated explanation as the dashboard sees it.
+
+    ``factors`` carries RiskLoom's own rendering of each selected code, never model text; the codes
+    themselves travel alongside so the client can style them without re-deriving anything. The
+    model's prose reaches a client only through ``summary`` and ``caveat``, both of which have
+    passed the grounding and forbidden-content checks before storage.
+    """
+
+    status: Literal["pending", "ready", "failed", "rejected"]
+    summary: str | None
+    factors: list[str]
+    factor_codes: list[str]
+    caveat: str | None
+    failure_reason: str | None
+    model_name: str
+    prompt_version: str
+    attempt_number: int
+    attempts_remaining: int
+    created_at: datetime
+
+
 class ActionCounts(_Model):
     allow: int
     review: int

@@ -46,6 +46,19 @@ class Settings(BaseSettings):
     evaluation_artifact_path: Path = Path("artifacts/evaluations/development/evaluation.json")
     dashboard_static_directory: Path = Path("static")
 
+    # Day 8 explanations. The API key is optional: a clone without one still starts and the
+    # dashboard reports the feature as unconfigured, exactly as it does for a missing evaluation
+    # artifact. The model id is a single value because Google revises recommended ids over time.
+    gemini_api_key: SecretStr | None = None
+    gemini_model: str = Field(default="gemini-3.6-flash", min_length=1, max_length=64)
+    # 20s rather than 10s: the Flash tier spends thinking tokens before emitting the reply,
+    # measured at ~222 thought tokens for a prompt this small.
+    gemini_timeout_seconds: float = Field(default=20.0, gt=0, le=60)
+    # Hard cap on Gemini calls a single process may make, mirroring the Razorpay order budget.
+    # It counts attempts rather than successes: the unit is taken before the outbound request, so
+    # a call that then fails still consumes one.
+    gemini_max_calls_per_process: int = Field(default=5, ge=0, le=20)
+
     @field_validator("database_url")
     @classmethod
     def require_async_postgresql(cls, value: SecretStr) -> SecretStr:

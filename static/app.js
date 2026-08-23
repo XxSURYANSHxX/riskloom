@@ -286,9 +286,136 @@ async function openCase(decisionId) {
           this decision never saw.
         </div>
       </div>
-    </div>`;
+    </div>
 
+    <div class="explain" id="explain-panel"></div>`;
+
+  renderExplanation(d, null);
   show("case");
+  if (isExplainable(d)) loadExplanation(d);
+}
+
+/* ------------------------------------------------------- explanation panel */
+
+// A generated explanation is enrichment about an already-final decision. It never took part in
+// the decision and cannot alter one.
+
+const FAIL_SAFE_TEXT = {
+  feature_computation_failed: "feature computation failed",
+  scoring_failed: "scoring failed",
+  order_creation_failed: "order creation failed",
+  order_budget_exhausted: "the process order budget was exhausted",
+};
+
+/** Only a finalised DENY carries a risk narrative. REVIEW is an operational fail-safe here. */
+function isExplainable(d) {
+  return d.status === "final" && d.risk_decision === "deny";
+}
+
+async function loadExplanation(d) {
+  const result = await fetchJson(`${API}/decisions/${d.decision_id}/explanation`);
+  renderExplanation(d, result.ok ? result.data : null);
+}
+
+async function requestExplanation(d) {
+  renderExplanation(d, { status: "pending" });
+  const response = await fetch(`${API}/decisions/${d.decision_id}/explanation`, { method: "POST" });
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  if (response.ok || response.status === 202) {
+    renderExplanation(d, payload);
+    return;
+  }
+  renderExplanation(d, { unavailable: payload?.error?.code || "unavailable" });
+}
+
+const UNAVAILABLE_TEXT = {
+  not_configured: "Explanation generation is not configured on this server.",
+  budget_exhausted: "The process explanation budget is spent. Restart to reset it.",
+  attempts_exhausted: "No generation attempts remain for this decision.",
+  in_progress: "A generation attempt is already running for this decision.",
+  not_eligible: "This decision is not eligible for a generated explanation.",
+};
+
+function renderExplanation(d, state) {
+  const panel = document.getElementById("explain-panel");
+  if (!panel) return;
+
+  if (!isExplainable(d)) {
+    panel.innerHTML = ineligibleMarkup(d);
+    return;
+  }
+  if (state && state.unavailable) {
+    panel.innerHTML = shell(
+      `<div class="muted">${UNAVAILABLE_TEXT[state.unavailable] || "Unavailable."}</div>`
+    );
+    return;
+  }
+  if (!state) {
+    panel.innerHTML = shell(
+      `<button class="generate" id="explain-go">Generate explanation</button>`
+    );
+    document.getElementById("explain-go").addEventListener("click", () => requestExplanation(d));
+    return;
+  }
+  if (state.status === "pending") {
+    panel.innerHTML = shell(`<div class="muted">Generating…</div>`);
+    return;
+  }
+  if (state.status === "ready") {
+    const chips = state.factors.map((f) => `<span class="factor">${f}</span>`).join("");
+    panel.innerHTML = shell(
+      `<p class="summary">${state.summary}</p>
+       <div class="factors">${chips}</div>
+       ${state.caveat ? `<p class="caveat">${state.caveat}</p>` : ""}`,
+      `${state.model_name} · prompt v${state.prompt_version}`
+    );
+    return;
+  }
+
+  // failed and rejected are deliberately distinct: one is the model not answering, the other is
+  // the model answering with something the grounding checks refused to trust.
+  const failed = state.status === "failed";
+  const detail = failed
+    ? `Generation failed: <b>${state.failure_reason}</b>.`
+    : `The model's response failed validation and was discarded (<b>${state.failure_reason}</b>).
+       Nothing was stored as an explanation.`;
+  const retry =
+    state.attempts_remaining > 0
+      ? `<button class="generate" id="explain-go">Try again (${state.attempts_remaining} left)</button>`
+      : `<div class="muted">No attempts remain.</div>`;
+  panel.innerHTML = shell(`<div class="failed">${detail}</div>${retry}`);
+  const button = document.getElementById("explain-go");
+  if (button) button.addEventListener("click", () => requestExplanation(d));
+}
+
+function ineligibleMarkup(d) {
+  if (d.action !== "review") return "";
+  const reason = FAIL_SAFE_TEXT[d.fail_safe_reason] || "a fail-safe condition";
+  const verdict = d.risk_decision
+    ? `The model's risk assessment was <b>${d.risk_decision}</b>.`
+    : "The model never produced a risk assessment for this attempt.";
+  return shell(
+    `<p class="summary">This checkout was held for review because ${reason}.
+     ${verdict} No payment was blocked on risk grounds.</p>`,
+    "operational, not generated"
+  );
+}
+
+function shell(inner, meta = "") {
+  return `<div class="explain-head">
+      <h3>Explanation</h3>
+      <span class="muted">${meta}</span>
+    </div>
+    <div class="explain-body">${inner}</div>
+    <div class="ctx-note">
+      Generated from stored aggregates only, after the decision was final. It is not part of the
+      decision and cannot change one.
+    </div>`;
 }
 
 /* -------------------------------------------------------------- view logic */

@@ -16,7 +16,9 @@ from riskloom.core.logging import (
     request_id_from_header,
 )
 from riskloom.db.session import Database
+from riskloom.explanations.client import GeminiClient
 from riskloom.integrations.razorpay.client import RazorpayOrdersClient
+from riskloom.services.explanations import ExplanationBudget
 from riskloom.services.preflight import OrderBudget
 from riskloom.serving.engine_host import OnlineFeatureEngine
 from riskloom.serving.model_host import load_serving_bundle
@@ -43,9 +45,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.order_budget = OrderBudget(
             limit=resolved_settings.razorpay_max_orders_per_process
         )
+        # Explanations are optional enrichment. With no API key the client is simply absent and
+        # the endpoint reports 503, exactly as the model panel 404s without its artifact.
+        app.state.explanation_client = (
+            GeminiClient(resolved_settings) if resolved_settings.gemini_api_key else None
+        )
+        app.state.explanation_budget = ExplanationBudget(
+            limit=resolved_settings.gemini_max_calls_per_process
+        )
         try:
             yield
         finally:
+            if app.state.explanation_client is not None:
+                await app.state.explanation_client.close()
             await app.state.orders_client.close()
             await app.state.database.close()
 

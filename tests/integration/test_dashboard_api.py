@@ -15,6 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from riskloom.core.config import Settings
 from riskloom.db.models import ReviewItem, RiskDecision
+
+# Imported rather than redefined: these are the sets the runtime sanitizer enforces, so a
+# change to one cannot silently diverge from the other.
+from riskloom.explanations.sanitizer import FORBIDDEN_KEYS, FORBIDDEN_SUBSTRINGS
 from riskloom.main import create_app
 
 pytestmark = pytest.mark.integration
@@ -296,38 +300,6 @@ DECISION_FIELDS = {
     "status",
     "model_id",
 }
-FORBIDDEN_KEYS = frozenset(
-    {
-        "email",
-        "contact",
-        "phone",
-        "card",
-        "card_number",
-        "pan",
-        "cvv",
-        "expiry",
-        "ip_address",
-        "vpa",
-        "notes",
-        "description",
-        "acquirer",
-        "token_id",
-        "cardholder",
-        "name",
-    }
-)
-# Substrings scanned across the whole serialised body. Deliberately only unambiguous ones:
-# short fragments like "pan" occur inside legitimate keys such as "span_seconds".
-FORBIDDEN_SUBSTRINGS = (
-    "email",
-    "cardholder",
-    "card_number",
-    "ip_address",
-    "cvv",
-    "@",
-    "acquirer",
-    "token_id",
-)
 
 
 def _leaf_keys(value: Any, found: set[str] | None = None) -> set[str]:

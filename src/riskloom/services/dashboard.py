@@ -136,12 +136,12 @@ async def get_decision(session: AsyncSession, decision_id: str) -> DecisionDetai
     )
     return DecisionDetail(
         decision=to_summary(row),
-        context=await _entity_context(session, row),
+        context=await entity_context_for(session, row),
         review_pending=bool(pending),
     )
 
 
-async def _entity_context(session: AsyncSession, row: RiskDecision) -> list[EntityContext]:
+async def entity_context_for(session: AsyncSession, row: RiskDecision) -> list[EntityContext]:
     """Ledger co-occurrence for each token on this decision.
 
     This answers "how often has this token been seen, and how did those decisions go" purely from

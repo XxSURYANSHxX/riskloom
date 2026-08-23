@@ -182,13 +182,25 @@ def test_client_modules_resolve_and_declare_no_external_origin() -> None:
             assert "//" not in target, (name, target)
 
 
-def test_client_only_ever_calls_the_read_only_dashboard_api() -> None:
-    """No mutation path: the client issues no method other than the default GET."""
+def test_client_makes_exactly_one_mutating_call_and_it_is_the_explanation_endpoint() -> None:
+    """Day 7's client made no mutating call at all. Day 8 adds exactly one, and no more.
+
+    This is deliberately tighter than the rule it replaces rather than looser: the previous version
+    banned a set of verbs, while this one pins the single permitted mutation to one verb *and* one
+    URL. Generating an explanation writes only to ``risk_decision_explanations``; a second POST
+    appearing anywhere in the client would fail this test.
+    """
 
     source = (STATIC / "app.js").read_text(encoding="utf-8")
-    assert "method:" not in source
-    for verb in ('"POST"', '"PUT"', '"PATCH"', '"DELETE"'):
-        assert verb not in source
+
+    methods = re.findall(r'method:\s*"([A-Z]+)"', source)
+    assert methods == ["POST"], methods
+    for verb in ('"PUT"', '"PATCH"', '"DELETE"'):
+        assert verb not in source, verb
+
+    targets = re.findall(r'fetch\(\s*`\$\{API\}([^`]*)`\s*,\s*\{\s*method:\s*"POST"', source)
+    assert targets == ["/decisions/${d.decision_id}/explanation"], targets
+
     for path in re.findall(r"\$\{API\}(/[a-z/{}$.\w-]*)", source):
         assert path.startswith("/")
     assert '"/api/v1/dashboard"' in source or "'/api/v1/dashboard'" in source

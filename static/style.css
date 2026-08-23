@@ -383,3 +383,38 @@ tbody tr.enter { animation: enter 220ms ease-out; }
 
 a.back { color: var(--rl-coordination); text-decoration: none; font-size: 12px; cursor: pointer; }
 a.back:hover { text-decoration: underline; }
+
+/* ---------------------------------------------------------------- explanation */
+/* Enrichment about an already-final decision. Uses the existing palette only: no new hue is
+   introduced, because an explanation carries no severity of its own. */
+.explain { border-top: 1px solid var(--rl-line); }
+.explain-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding: 14px 20px 0 20px;
+}
+.explain-head h3 {
+  font: 600 11px/1 var(--rl-font-body); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--rl-text-faint); margin: 0;
+}
+.explain-head .muted { font-size: 11px; font-family: var(--rl-font-mono); }
+.explain-body { padding: 10px 20px 4px 20px; }
+.explain .summary { margin: 0 0 10px 0; font-size: 13.5px; line-height: 1.55; color: var(--rl-text); }
+.explain .caveat { margin: 10px 0 0 0; font-size: 12px; line-height: 1.5; color: var(--rl-text-faint); }
+.explain .failed { font-size: 13px; line-height: 1.5; color: var(--rl-text); margin-bottom: 10px; }
+.explain .factors { display: flex; flex-wrap: wrap; gap: 6px; }
+.explain .factor {
+  font: 400 11px/1 var(--rl-font-body);
+  padding: 5px 9px; border-radius: 3px;
+  background: rgba(86, 200, 184, 0.09);
+  border: 1px solid rgba(86, 200, 184, 0.28);
+  color: var(--rl-coordination);
+}
+.explain .ctx-note { padding: 0 20px 14px 20px; }
+button.generate {
+  font: 400 12px/1 var(--rl-font-body);
+  padding: 8px 14px; border-radius: 3px; cursor: pointer;
+  background: var(--rl-surface-raised); color: var(--rl-text);
+  border: 1px solid var(--rl-line);
+}
+button.generate:hover { border-color: var(--rl-calm); color: var(--rl-text); }
+button.generate:disabled { opacity: 0.5; cursor: default; }

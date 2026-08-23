@@ -292,3 +292,39 @@ named future work; reproduce the measurement with `riskloom.analysis.blindspot`.
   the offline figures come from ground-truth labels that do not exist for live traffic.
 - Treat a missing `artifacts/evaluations/` artifact as an ordinary state. The model endpoint answers
   404 and the client renders an unavailable state; startup must never depend on it.
+
+## Explanation invariants
+
+- The LLM explains, it never decides. `riskloom.explanations` must never influence
+  `risk_decision`, `action`, `calibrated_probability`, `decision_threshold`, or any other value in
+  `risk_decisions`, and must never gate, delay, or alter a live decision.
+- Keep `riskloom.explanations` pure: no ORM, no session, no FastAPI, and nothing from
+  `riskloom.serving`, `riskloom.services`, `riskloom.policy`, `riskloom.modeling` or
+  `riskloom.features`. Write isolation is by construction -- the package cannot reach a database,
+  so it cannot write to the ledger. All persistence lives in `riskloom.services.explanations`.
+- Enforce isolation in both directions and at both levels: an AST check over the sources, and a
+  fresh-interpreter `sys.modules` probe. The decision path must never load the explanation package,
+  and the explanation package must never load the decision path or `riskloom.db`. Do not place
+  explanation dependencies in the shared `api/dependencies.py`: that made the package reachable from
+  `api/routes/checkout.py` and the isolation test correctly rejected it.
+- Generation is lazy and human-initiated. Never generate from the preflight path, never retry
+  automatically, and never add a background queue. A retry is a fresh request that consumes one
+  attempt and one unit of budget.
+- Only a finalised DENY is eligible. REVIEW is an operational fail-safe whose `risk_decision` is
+  null or `allow`, so it carries no risk narrative; render its `fail_safe_reason` deterministically
+  instead. Keep `status == 'final'` in the eligibility predicate even though preflight cannot
+  currently produce a pending deny.
+- Send only numbers, bools and closed enums. Never send a free-text field, a pseudonymous token, an
+  identifier, or an absolute timestamp. The absence of a free-text field is the anti-injection
+  property, so do not add one.
+- Keep `factors` a closed enum that the model selects from and RiskLoom renders. Never store or
+  display model-authored factor text. Every selected code must be entailed by the input.
+- Numerals in model prose are checked against exact, lossless re-renderings of supplied values only.
+  Rounded and truncated restatements are rejected deliberately. If manual verification shows
+  repeated `unsupported_number` rejections, tighten the prompt -- never widen the tolerance.
+- Never log, store, or return an upstream response body, header, or API key. Failure reasons are
+  short stable identities. `failed` and `rejected` are distinct states and must stay distinct.
+- Bound real spend with all three caps: process call budget, per-decision attempts, and the
+  uniqueness claim taken before the outbound call. Automated tests must never make a real call.
+- The dashboard stays read-only apart from this single `POST`, which writes only
+  `risk_decision_explanations`. Review-item mutation remains out of scope.
