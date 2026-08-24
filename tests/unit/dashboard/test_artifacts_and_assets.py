@@ -263,3 +263,48 @@ def test_client_never_references_a_policy_band_or_a_feature_name() -> None:
         source = (STATIC / name).read_text(encoding="utf-8").casefold()
         for token in ("policy_band", "select_band", "prior_attempt_count", "feature_vector"):
             assert token not in source, (name, token)
+
+
+def test_counts_are_pluralized_through_one_shared_helper() -> None:
+    """ "1 decisions" rendered live at two sites at once.
+
+    Two simultaneous occurrences is the signature of a rule with no home, so the fix is a shared
+    helper rather than two inline conditionals. This asserts both call sites route through it and
+    that no bare `} decisions` interpolation survives anywhere in the client.
+    """
+
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    fmt = (STATIC / "format.js").read_text(encoding="utf-8")
+
+    assert "export function pluralize(count, singular, plural)" in fmt
+    assert re.search(r"import \{[^}]*\bpluralize\b[^}]*\} from \"\./format\.js\";", app, re.S)
+
+    # Both known sites now use it.
+    assert 'pluralize(c.decision_count, "decision")' in app
+    assert 'pluralize(graph.decision_count, "decision")' in app
+    assert 'pluralize(graph.clustered_entity_count, "shared entity", "shared entities")' in app
+
+    # And no un-pluralized count interpolation is left behind.
+    for stray in re.findall(r"\$\{[^}]*count[^}]*\}\s+(decision|entitie|attempt|order)s\b", app):
+        raise AssertionError(f"un-pluralized count rendering: {stray}")
+
+
+def test_the_pluralize_helper_handles_zero_one_and_many() -> None:
+    """The rule itself, checked as arithmetic rather than by reading the template.
+
+    Mirrors the JavaScript exactly: only n == 1 takes the singular, so 0 pluralizes like 2.
+    """
+
+    fmt = (STATIC / "format.js").read_text(encoding="utf-8")
+    assert "count === 1 ? singular" in fmt, "singular must be selected by equality with 1"
+
+    def pluralize(count: int, singular: str, plural: str | None = None) -> str:
+        word = singular if count == 1 else (plural or f"{singular}s")
+        return f"{count} {word}"
+
+    assert pluralize(0, "decision") == "0 decisions"
+    assert pluralize(1, "decision") == "1 decision"
+    assert pluralize(2, "decision") == "2 decisions"
+    assert pluralize(1, "shared entity", "shared entities") == "1 shared entity"
+    assert pluralize(0, "shared entity", "shared entities") == "0 shared entities"
+    assert pluralize(3, "shared entity", "shared entities") == "3 shared entities"

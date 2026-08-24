@@ -72,6 +72,32 @@ REAL_LEDGER = LayoutInput(
     ],
 )
 
+
+def dense_pair(events: int) -> LayoutInput:
+    """Two hubs, many events, every event on both.
+
+    Orthogonal to every other fixture here. `build()` produces many hubs with few events each; this
+    produces the opposite, which is exactly what repeated demo-burst clicks accumulate: one device
+    hub and one network hub with the whole burst history hanging off both.
+    """
+
+    radius = entity_radius(events, 1)
+    nodes = [
+        hub("device:dense", radius),
+        hub("network:dense", radius),
+        *(event(f"event:{index:04d}") for index in range(events)),
+    ]
+    edges = [
+        pair
+        for index in range(events)
+        for pair in (
+            (f"event:{index:04d}", "device:dense"),
+            (f"event:{index:04d}", "network:dense"),
+        )
+    ]
+    return LayoutInput(nodes=nodes, edges=edges)
+
+
 FIXTURES: list[tuple[str, LayoutInput]] = [
     ("real 2-hub burst", REAL_LEDGER),
     ("single hub", build(1, 5)),
@@ -80,6 +106,8 @@ FIXTURES: list[tuple[str, LayoutInput]] = [
     ("15 hubs", build(15, 1)),
     ("20 hubs", build(20, 2)),
     ("20 hubs shared", build(20, 3, shared=True)),
+    ("2 hubs, 40 events", dense_pair(40)),
+    ("2 hubs, 60 events", dense_pair(60)),
 ]
 
 
@@ -367,3 +395,69 @@ def test_label_offset_alternates_only_on_a_crowded_ring() -> None:
     assert label_offset(20, 0, 4) == label_offset(20, 1, 4)
     assert label_offset(20, 1, 12) > label_offset(20, 0, 12)
     assert label_offset(30, 0, 4) > label_offset(20, 0, 4)
+
+
+# --------------------------------------------------------------------------- dense pair
+
+
+def test_a_dense_hub_pair_stays_separated_at_burst_scale() -> None:
+    """Two hubs carrying a whole burst history: no overlap, at every canvas size.
+
+    This shape was an untested gap. Every other fixture spreads events across many hubs; repeated
+    demo-burst clicks do the opposite, piling 40-60 events onto one device hub and one network hub.
+    The layout copes -- relaxation keeps every pair apart -- and that is what is locked in here.
+    """
+
+    for events in (40, 60):
+        layout = dense_pair(events)
+        for width, height in CANVASES:
+            points = compute_layout(layout, width, height)
+            nodes = sorted(layout.nodes, key=lambda node: node.node_id)
+            for index, left in enumerate(nodes):
+                for right in nodes[index + 1 :]:
+                    gap = math.hypot(
+                        points[left.node_id].x - points[right.node_id].x,
+                        points[left.node_id].y - points[right.node_id].y,
+                    )
+                    assert gap > left.radius + right.radius, (events, width, left.node_id)
+
+
+def test_the_dense_pair_is_crowded_and_that_is_recorded_not_hidden() -> None:
+    """The honest part: the graph is dense at this scale, and stays legible only just.
+
+    At 60 events on one hub pair, most event dots sit within about 20px of a neighbour -- clear of
+    each other, but reading as a cluster rather than as countable points. This asserts the measured
+    state so it is a known, intentional limitation rather than a surprise in a demo. Collapsing
+    events into meta-nodes would fix the density and is deliberately *not* done here; see the
+    deferred-improvement note in the report.
+    """
+
+    layout = dense_pair(60)
+    points = compute_layout(layout, 1_100, 620)
+    events = [node for node in layout.nodes if not node.is_hub]
+
+    gaps = []
+    for left in events:
+        nearest = min(
+            math.hypot(
+                points[left.node_id].x - points[right.node_id].x,
+                points[left.node_id].y - points[right.node_id].y,
+            )
+            for right in events
+            if right.node_id != left.node_id
+        )
+        gaps.append(nearest)
+
+    # Never touching: the separation guarantee holds even at this density.
+    assert min(gaps) > 2 * EVENT_RADIUS
+    # But crowded: most dots have a close neighbour. Recorded, not asserted away.
+    crowded = sum(1 for gap in gaps if gap < 20)
+    assert crowded > len(events) // 2, crowded
+
+
+def test_the_dense_pair_still_uses_the_canvas_horizontally() -> None:
+    """Density must not collapse the graph into a corner, which was the Day 7 regression."""
+
+    points = compute_layout(dense_pair(60), 1_100, 620)
+    xs = [point.x for point in points.values()]
+    assert (max(xs) - min(xs)) / 1_100 > 0.7

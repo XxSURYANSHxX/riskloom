@@ -27,6 +27,18 @@ export function amount(subunits, currency) {
   return `${major} ${currency}`;
 }
 
+/**
+ * Count plus correctly-inflected noun.
+ *
+ * Shared rather than inlined: this bug existed at two call sites at once ("1 decisions"), which is
+ * the signature of a rule that needs one home. Regular English plurals only, which is all this
+ * dashboard renders; pass an explicit plural for anything else.
+ */
+export function pluralize(count, singular, plural) {
+  const word = count === 1 ? singular : (plural ?? `${singular}s`);
+  return `${count} ${word}`;
+}
+
 export function duration(seconds) {
   if (seconds === null || seconds === undefined) return "—";
   if (seconds < 60) return `${seconds}s`;

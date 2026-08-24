@@ -31,7 +31,7 @@ from riskloom.explanations.schemas import (
     FactorCode,
     FailSafeReasonInput,
 )
-from riskloom.services.dashboard import entity_context_for
+from riskloom.services.dashboard import SelfInclusion, entity_context_for
 
 MAX_ATTEMPTS_PER_DECISION = 3
 
@@ -202,7 +202,11 @@ async def generate(
     if client is None:
         raise ExplanationRefused("not_configured")
 
-    context = await entity_context_for(session, row)
+    # EXCLUDE_SELF is mandatory here, not a preference. Every factor this evidence can support is
+    # phrased as prior history, and the decision being explained is already committed by the time
+    # this runs. Counting it let a rotated card-testing instrument -- one whose only appearance in
+    # the ledger is this very attempt -- support "prior denials on this instrument".
+    context = await entity_context_for(session, row, SelfInclusion.EXCLUDE_SELF)
     payload = build_input(row, context)
     digest = input_digest(payload)
     attempt_number = len(existing) + 1

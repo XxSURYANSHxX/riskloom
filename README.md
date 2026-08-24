@@ -268,6 +268,11 @@ is published whether the policy wins or loses.
 - **No authentication.** Every endpoint is unauthenticated; acceptable only for a local build.
 - **Live feature state is in-memory.** It does not survive a restart; history features read zero
   until traffic rebuilds them.
+- **The Razorpay order cap is per-process, not cumulative.** `razorpay_max_orders_per_process`
+  bounds one running process, and the counter lives in memory, so restarting the container resets
+  it. The **orders created** total in the ledger is cumulative across process lifetimes and can
+  therefore legitimately exceed the configured cap — that is the documented design, not a bypassed
+  guardrail. The guarantee is that no single process ever exceeds it.
 - **Review items cannot be worked.** They are recorded and counted, never resolved or overridden.
 - **Explanations are enrichment, never evidence.** Generated after the fact from stored aggregates,
   with no path to any decision. Free-tier terms may permit training on submitted content, which is

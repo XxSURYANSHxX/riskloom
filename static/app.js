@@ -11,6 +11,7 @@ import {
   clockTime,
   duration,
   el,
+  pluralize,
   probabilityMarkup,
   shortToken,
   stamp,
@@ -207,7 +208,7 @@ async function loadCoordination() {
     });
     for (const item of graph.nodes) state.seenNodes.add(item.node_id);
     document.getElementById("graph-meta").textContent =
-      `${graph.clustered_entity_count} shared entities across ${graph.decision_count} decisions`;
+      `${pluralize(graph.clustered_entity_count, "shared entity", "shared entities")} across ${pluralize(graph.decision_count, "decision")}`;
   }
   if (!state.modelLoaded) await loadModelPanel();
   await loadDriftPanel();
@@ -384,7 +385,7 @@ async function openCase(decisionId) {
       const denied = c.denied_count > 0 ? `<em>${c.denied_count} denied</em>` : "0 denied";
       return `<div class="ctx">
         <span class="k">${c.kind} <span class="token">${shortToken(c.token)}</span></span>
-        <span class="v">${c.decision_count} decisions · ${duration(c.span_seconds)} · ${denied}</span>
+        <span class="v">${pluralize(c.decision_count, "decision")} · ${duration(c.span_seconds)} · ${denied}</span>
       </div>`;
     })
     .join("");

@@ -12,6 +12,7 @@ that it does.
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from enum import StrEnum
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -136,16 +137,47 @@ async def get_decision(session: AsyncSession, decision_id: str) -> DecisionDetai
     )
     return DecisionDetail(
         decision=to_summary(row),
-        context=await entity_context_for(session, row),
+        # INCLUDE_SELF is correct here and is chosen deliberately. This panel answers "what is
+        # this entity's activity", and a human reading a case is looking at one of those rows --
+        # omitting it would make the totals disagree with the ledger they can see beside it. The
+        # panel never uses the word "prior".
+        context=await entity_context_for(session, row, SelfInclusion.INCLUDE_SELF),
         review_pending=bool(pending),
     )
 
 
-async def entity_context_for(session: AsyncSession, row: RiskDecision) -> list[EntityContext]:
+class SelfInclusion(StrEnum):
+    """Whether an entity aggregate counts the decision it was computed for.
+
+    A required argument with no default, deliberately. The original defect was not a wrong
+    comparison -- it was that nobody ever had to decide. A query that silently counted the current
+    row let an explanation assert "prior denials on this instrument" about an instrument whose only
+    denial *was* the decision being explained.
+
+    This mirrors the compute-before-update rule the feature engine already holds itself to: evidence
+    about an event may only be drawn from what happened before it.
+    """
+
+    INCLUDE_SELF = "include_self"
+    """A human-facing summary of an entity's whole activity, the current row included."""
+
+    EXCLUDE_SELF = "exclude_self"
+    """Strictly prior history. Required wherever the word "prior" is claimed."""
+
+
+async def entity_context_for(
+    session: AsyncSession,
+    row: RiskDecision,
+    self_inclusion: SelfInclusion,
+) -> list[EntityContext]:
     """Ledger co-occurrence for each token on this decision.
 
     This answers "how often has this token been seen, and how did those decisions go" purely from
     stored rows. It is not the model's feature vector, which is not persisted anywhere.
+
+    ``self_inclusion`` has no default on purpose: see :class:`SelfInclusion`. Every field below --
+    ``decision_count``, ``denied_count``, ``review_count`` and the span -- honours it together, so a
+    caller can never get a "prior" count paired with an all-time span.
     """
 
     contexts: list[EntityContext] = []
@@ -167,17 +199,18 @@ async def entity_context_for(session: AsyncSession, row: RiskDecision) -> list[E
             continue
         column = getattr(RiskDecision, field)
         anchor = func.coalesce(RiskDecision.occurred_at, RiskDecision.created_at)
-        result = (
-            await session.execute(
-                select(
-                    func.count(),
-                    func.count().filter(RiskDecision.action == "deny"),
-                    func.count().filter(RiskDecision.action == "review"),
-                    func.min(anchor),
-                    func.max(anchor),
-                ).where(column == token)
-            )
-        ).one()
+        query = select(
+            func.count(),
+            func.count().filter(RiskDecision.action == "deny"),
+            func.count().filter(RiskDecision.action == "review"),
+            func.min(anchor),
+            func.max(anchor),
+        ).where(column == token)
+        if self_inclusion is SelfInclusion.EXCLUDE_SELF:
+            # Excluded by primary key rather than by timestamp: the decision is already committed
+            # when this runs, so an ordering comparison would still admit it on a tie.
+            query = query.where(RiskDecision.id != row.id)
+        result = (await session.execute(query)).one()
         total, denied, reviewed, first_seen, last_seen = result
         span = (
             int((last_seen - first_seen).total_seconds())
