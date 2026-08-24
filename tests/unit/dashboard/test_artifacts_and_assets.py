@@ -182,28 +182,78 @@ def test_client_modules_resolve_and_declare_no_external_origin() -> None:
             assert "//" not in target, (name, target)
 
 
-def test_client_makes_exactly_one_mutating_call_and_it_is_the_explanation_endpoint() -> None:
-    """Day 7's client made no mutating call at all. Day 8 adds exactly one, and no more.
+def test_client_makes_exactly_two_mutating_calls_and_both_are_pinned() -> None:
+    """Day 7's client mutated nothing. Day 8 added one POST; Gate H2 adds a second.
 
-    This is deliberately tighter than the rule it replaces rather than looser: the previous version
-    banned a set of verbs, while this one pins the single permitted mutation to one verb *and* one
-    URL. Generating an explanation writes only to ``risk_decision_explanations``; a second POST
-    appearing anywhere in the client would fail this test.
+    Deliberately widened from "exactly one" to "exactly two", and flagged as such: it relaxes an
+    earlier guarantee. The replacement stays tight by pinning both URLs rather than merely counting,
+    so a third POST, or either of these two pointed somewhere else, still fails.
+
+    Neither mutation can affect a decision. The explanation POST writes one enrichment row; the
+    burst POST is the ordinary public scoring endpoint, subject to every bound a normal caller has.
     """
 
     source = (STATIC / "app.js").read_text(encoding="utf-8")
 
     methods = re.findall(r'method:\s*"([A-Z]+)"', source)
-    assert methods == ["POST"], methods
+    assert methods == ["POST", "POST"], methods
     for verb in ('"PUT"', '"PATCH"', '"DELETE"'):
         assert verb not in source, verb
 
-    targets = re.findall(r'fetch\(\s*`\$\{API\}([^`]*)`\s*,\s*\{\s*method:\s*"POST"', source)
-    assert targets == ["/decisions/${d.decision_id}/explanation"], targets
+    explanation = re.findall(r'fetch\(\s*`\$\{API\}([^`]*)`\s*,\s*\{\s*method:\s*"POST"', source)
+    assert explanation == ["/decisions/${d.decision_id}/explanation"], explanation
+
+    # The burst posts to the public scoring endpoint, held in a constant rather than interpolated.
+    assert re.search(r'const PREFLIGHT = "/api/v1/checkout/preflight";', source)
+    assert re.search(r"fetch\(PREFLIGHT,\s*\{", source)
 
     for path in re.findall(r"\$\{API\}(/[a-z/{}$.\w-]*)", source):
         assert path.startswith("/")
     assert '"/api/v1/dashboard"' in source or "'/api/v1/dashboard'" in source
+
+
+def test_every_style_token_reference_resolves() -> None:
+    """The test whose absence let two gates ship broken typography.
+
+    Days 8 and 9 both wrote ``var(--rl-font-body)`` and ``var(--rl-font-mono)``, which are not
+    declared anywhere. Five of the six uses sat inside a ``font:`` shorthand, and an unresolved
+    custom property invalidates the whole declaration at computed-value time, so the drift panel's
+    headline number silently rendered at inherited body size instead of 22px monospaced.
+    """
+
+    css = (STATIC / "style.css").read_text(encoding="utf-8")
+    declared = set(re.findall(r"(--rl-[a-z-]+)\s*:", css))
+    referenced = set(re.findall(r"var\((--rl-[a-z-]+)", css))
+
+    unresolved = sorted(referenced - declared)
+    assert not unresolved, f"unresolved custom properties: {unresolved}"
+    assert not sorted(declared - referenced), "a declared token is never used"
+
+
+def test_the_semantic_palette_is_unchanged() -> None:
+    """Every gate has added to this stylesheet; none may add a new hue."""
+
+    css = (STATIC / "style.css").read_text(encoding="utf-8")
+    declared = set(re.findall(r"(--rl-[a-z-]+)\s*:", css))
+    assert declared == {
+        "--rl-ground",
+        "--rl-surface",
+        "--rl-surface-raised",
+        "--rl-line",
+        "--rl-calm",
+        "--rl-elevated",
+        "--rl-alert",
+        "--rl-coordination",
+        "--rl-boundary",
+        "--rl-text",
+        "--rl-text-dim",
+        "--rl-text-faint",
+        "--rl-display",
+        "--rl-body",
+        "--rl-mono",
+        "--rl-gap",
+        "--rl-radius",
+    }, sorted(declared)
 
 
 def test_client_never_references_a_policy_band_or_a_feature_name() -> None:

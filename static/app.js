@@ -64,6 +64,84 @@ function decisionRow(decision, isNew, startsMinute) {
   return row;
 }
 
+/* --------------------------------------------------------------- demo burst */
+
+// A manual demo control, not an operator feature. It orchestrates the existing public
+// POST /api/v1/checkout/preflight and nothing else: no decision logic is duplicated, bypassed or
+// reimplemented here, and every bound that applies to a normal request still applies to these.
+//
+// Four attempts sharing one device and network is the measured shape: attempts 1-3 allow while
+// velocity builds, and the fourth crosses the locked threshold and denies. Attempt 3 lands exactly
+// on the documented tie-cluster probability one unit in the last place below the threshold.
+//
+// The device and network are FIXED rather than random. After the first burst the device carries
+// enough history that every later attempt denies immediately, so the demo costs three Razorpay
+// test-mode order attempts once and is then free to repeat. A fresh device per click would spend
+// three more each time and exhaust the process cap during the second click.
+
+const PREFLIGHT = "/api/v1/checkout/preflight";
+const BURST_SIZE = 4;
+const DEMO_DEVICE = "dev_deadbeefdeadbeefdeadbeefdeadbeef";
+const DEMO_NETWORK = "net_cafebabecafebabecafebabecafebabe";
+const DEMO_MERCHANT = "mrc_decafbaddecafbaddecafbaddecafbad";
+
+// crypto.randomUUID() returns 36 characters in 8-4-4-4-12 form: 32 lowercase hex plus four
+// hyphens. The request schema requires exactly 32 hex, so the hyphens are stripped.
+const demoToken = (prefix) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+
+function burstAttempt() {
+  return {
+    event_id: demoToken("evt"),
+    merchant_id: DEMO_MERCHANT,
+    checkout_id: demoToken("chk"),
+    customer_token: null,
+    device_token: DEMO_DEVICE,
+    network_token: DEMO_NETWORK,
+    session_token: demoToken("ses"),
+    // A distinct instrument per attempt: card testing rotates cards behind one device.
+    payment_instrument_token: demoToken("pmt"),
+    amount_subunits: 25000,
+    currency: "INR",
+    channel: "web",
+  };
+}
+
+async function runBurst() {
+  const button = document.getElementById("burst-go");
+  const status = document.getElementById("burst-status");
+  if (!button || button.disabled) return;
+
+  button.disabled = true;
+  status.hidden = false;
+  status.textContent = "Scoring 1 of " + BURST_SIZE + "…";
+
+  const verdicts = [];
+  try {
+    for (let index = 0; index < BURST_SIZE; index += 1) {
+      status.textContent = `Scoring ${index + 1} of ${BURST_SIZE}…`;
+      const response = await fetch(PREFLIGHT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(burstAttempt()),
+      });
+      if (!response.ok) {
+        verdicts.push("error");
+        continue;
+      }
+      const decision = await response.json();
+      verdicts.push(decision.action);
+    }
+    const chips = verdicts.map((v) => `<span class="chip ${v}">${v}</span>`).join(" ");
+    status.innerHTML = `${BURST_SIZE} attempts scored: ${chips}`;
+  } finally {
+    button.disabled = false;
+  }
+
+  // Refresh immediately rather than waiting for the next poll, so the effect is visible.
+  await loadStream();
+  await loadCoordination();
+}
+
 async function loadStream() {
   const summary = await fetchJson(`${API}/summary`);
   if (summary.ok) renderStats(summary.data);
@@ -275,7 +353,14 @@ async function loadLedger() {
     row.addEventListener("click", () => openCase(d.decision_id));
     body.appendChild(row);
   }
-  document.getElementById("ledger-empty").hidden = sorted.length > 0;
+  // Two genuinely different empty states. Saying "no rows match this filter" when no filter is
+  // applied tells the reader something untrue, and on a fresh install that is the first thing
+  // they read.
+  const emptyNode = document.getElementById("ledger-empty");
+  emptyNode.hidden = sorted.length > 0;
+  emptyNode.innerHTML = state.ledgerFilter
+    ? "No decisions match this filter."
+    : "No decisions recorded yet. Use <b>Simulate attack burst</b> on the stream view.";
   document.getElementById("ledger-meta").textContent = `${sorted.length} of ${total}`;
 }
 
@@ -514,6 +599,7 @@ function restartPolling() {
 
 document.addEventListener("visibilitychange", restartPolling);
 document.getElementById("case-back").addEventListener("click", () => show("stream"));
+document.getElementById("burst-go").addEventListener("click", runBurst);
 for (const button of document.querySelectorAll("nav.views button")) {
   button.addEventListener("click", () => show(button.dataset.view));
 }

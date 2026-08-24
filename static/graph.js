@@ -49,7 +49,8 @@ export function renderGraph(svg, graph, { onSelect, previousIds } = {}) {
     const message = node("text", {
       x: width / 2, y: height / 2, "text-anchor": "middle", class: "hub-label", "font-size": 12,
     });
-    message.textContent = "no shared tokens in this window";
+    message.textContent =
+      "No shared tokens in this window. Run a burst from the stream view to form one.";
     svg.appendChild(message);
     return;
   }

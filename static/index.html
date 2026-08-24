@@ -29,9 +29,17 @@
       <div class="panel">
         <div class="panel-head">
           <h2>Live decision stream</h2>
+          <span class="demo-tag">demo trigger</span>
+          <button class="burst" id="burst-go" type="button">Simulate attack burst</button>
           <span class="spacer"></span>
           <span class="muted" id="stream-meta"></span>
         </div>
+        <div class="demo-note">
+          Posts four synthetic checkout attempts sharing one device and network to the live
+          scoring endpoint, so the detector can be watched deciding in real time. A real merchant
+          operator would not have this control.
+        </div>
+        <div class="burst-status" id="burst-status" hidden></div>
         <table>
           <thead>
             <tr>
@@ -46,7 +54,7 @@
           </thead>
           <tbody id="stream-body"></tbody>
         </table>
-        <div class="empty" id="stream-empty" hidden>No decisions recorded yet.</div>
+        <div class="empty" id="stream-empty" hidden>No decisions recorded yet. Use <b>Simulate attack burst</b> above to score four correlated attempts.</div>
       </div>
     </section>
 
@@ -118,7 +126,7 @@
           </thead>
           <tbody id="ledger-body"></tbody>
         </table>
-        <div class="empty" id="ledger-empty" hidden>No decisions match this filter.</div>
+        <div class="empty" id="ledger-empty" hidden></div>
       </div>
     </section>
 

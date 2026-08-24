@@ -393,17 +393,18 @@ a.back:hover { text-decoration: underline; }
   padding: 14px 20px 0 20px;
 }
 .explain-head h3 {
-  font: 600 11px/1 var(--rl-font-body); letter-spacing: 0.08em; text-transform: uppercase;
+  /* Same treatment as .detail-grid h3, so section headings agree across the case-detail page. */
+  font: 500 10px/1 var(--rl-body); letter-spacing: 0.13em; text-transform: uppercase;
   color: var(--rl-text-faint); margin: 0;
 }
-.explain-head .muted { font-size: 11px; font-family: var(--rl-font-mono); }
+.explain-head .muted { font-size: 11px; font-family: var(--rl-mono); }
 .explain-body { padding: 10px 20px 4px 20px; }
 .explain .summary { margin: 0 0 10px 0; font-size: 13.5px; line-height: 1.55; color: var(--rl-text); }
 .explain .caveat { margin: 10px 0 0 0; font-size: 12px; line-height: 1.5; color: var(--rl-text-faint); }
 .explain .failed { font-size: 13px; line-height: 1.5; color: var(--rl-text); margin-bottom: 10px; }
 .explain .factors { display: flex; flex-wrap: wrap; gap: 6px; }
 .explain .factor {
-  font: 400 11px/1 var(--rl-font-body);
+  font: 400 11px/1 var(--rl-body);
   padding: 5px 9px; border-radius: 3px;
   background: rgba(86, 200, 184, 0.09);
   border: 1px solid rgba(86, 200, 184, 0.28);
@@ -411,7 +412,7 @@ a.back:hover { text-decoration: underline; }
 }
 .explain .ctx-note { padding: 0 20px 14px 20px; }
 button.generate {
-  font: 400 12px/1 var(--rl-font-body);
+  font: 400 12px/1 var(--rl-body);
   padding: 8px 14px; border-radius: 3px; cursor: pointer;
   background: var(--rl-surface-raised); color: var(--rl-text);
   border: 1px solid var(--rl-line);
@@ -423,10 +424,54 @@ button.generate:disabled { opacity: 0.5; cursor: default; }
 /* Reuses the existing risk scale: an index is not a new kind of signal, so it gets no new hue. */
 .drift-head { display: flex; align-items: baseline; gap: 10px; padding: 12px 0 8px 0; }
 .drift-value {
-  font: 400 22px/1 var(--rl-font-mono); font-variant-numeric: tabular-nums;
+  font: 400 22px/1 var(--rl-mono); font-variant-numeric: tabular-nums;
   color: var(--rl-text);
 }
 .drift-value.none { color: var(--rl-calm); }
 .drift-value.moderate { color: var(--rl-elevated); }
 .drift-value.significant { color: var(--rl-alert); }
-.drift-band { font: 400 11px/1 var(--rl-font-body); color: var(--rl-text-faint); }
+.drift-band { font: 400 11px/1 var(--rl-body); color: var(--rl-text-faint); }
+
+/* ----------------------------------------------------------------- demo burst */
+/* A manual trigger, deliberately marked as out-of-band. It borrows the dashed treatment the
+   offline banners already use, so it reads as "not a live operator control" the same way the
+   model and drift panels read as "not live traffic". No new hue is introduced. */
+.demo-tag {
+  font: 500 9px/1 var(--rl-body);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--rl-text-faint);
+  border: 1px dashed var(--rl-line);
+  border-radius: 3px;
+  padding: 4px 7px;
+  margin-left: 14px;
+}
+button.burst {
+  font: 500 11px/1 var(--rl-body);
+  letter-spacing: 0.06em;
+  padding: 7px 13px;
+  margin-left: 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  background: var(--rl-surface-raised);
+  color: var(--rl-text);
+  border: 1px dashed var(--rl-line);
+}
+button.burst:hover:not(:disabled) { border-color: var(--rl-coordination); color: var(--rl-text); }
+button.burst:disabled { opacity: 0.45; cursor: progress; }
+.demo-note {
+  padding: 0 20px 12px 20px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--rl-text-faint);
+  border-bottom: 1px solid var(--rl-line);
+}
+.burst-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  font-size: 12px;
+  color: var(--rl-text-dim);
+  border-bottom: 1px solid var(--rl-line);
+}
