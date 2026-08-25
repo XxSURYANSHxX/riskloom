@@ -1,5 +1,13 @@
 """Score the locked Day 4 model against evasion-shaped attack traffic.
 
+Diagnostic only, and that is a safety boundary rather than a convenience. The evasion-shaped
+traffic measured here is synthetic and is produced entirely inside RiskLoom's own offline,
+locked-contract simulator; this module reads those published datasets from disk and scores them.
+It has no network surface, accepts no URL, hostname, address or external target, and cannot
+generate, submit, or execute a transaction against a real payment system, a real card, or any
+system other than RiskLoom's own sandbox. Its sole purpose is to measure and disclose the locked
+model's own weaknesses so they can be published rather than discovered by someone else.
+
 Pure offline analysis, in the same shape as :mod:`riskloom.analysis.blindspot`: invoked by command,
 producing a written report, reachable from no decision path and reaching none.
 

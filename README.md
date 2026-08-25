@@ -190,6 +190,10 @@ place. A system that knows precisely what it cannot do is the point, not an apol
 
 ### 1. The model is evadable by boundary-spaced traffic — recall 0.9765 → 0.00
 
+This was measured entirely inside RiskLoom's own offline simulator: the evasion traffic is
+synthetic, it is scored against the locked model on the same machine, and nothing in the analysis
+path can reach a real payment system, a real card, or any host outside this sandbox.
+
 Attack traffic shaped to defeat the detector's own mechanisms drove recall from 0.9765 to between
 0.00 and 0.12, with cost rising roughly tenfold. Spacing attempts at *exactly* one feature window
 (3600s) achieved **complete evasion**: 0 of 120 events and 0 of 20 campaigns detected, with mean

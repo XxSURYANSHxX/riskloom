@@ -372,6 +372,13 @@ named future work; reproduce the measurement with `riskloom.analysis.blindspot`.
   package must not import sklearn, `riskloom.modeling.training`, or `riskloom.modeling.data`.
 - Keep `riskloom.analysis` offline and unreachable from `riskloom.serving`, `riskloom.services` and
   `riskloom.policy`, enforced with an AST check and a fresh-interpreter probe in both directions.
+- The scope of this package is diagnostic-only, and that is a safety boundary rather than a
+  convenience. It reads locked simulation and feature artifacts from disk, scores them through
+  portable inference, and writes one JSON report. It has no network surface, takes no URL,
+  hostname, address or external target, and must never be able to submit a transaction anywhere.
+  Any future change that would let it accept an external target, reach a live endpoint, or write
+  outside the locked simulation artifact tree is a breaking change to that boundary and needs its
+  own explicit gate. It is never a routine feature addition, however small the diff looks.
 - Adding any field to `GeneratorConfig` is the most dangerous change in this repository: schema
   1.1.0 namespaces every PRNG stream by a fingerprint over the whole configuration, so a stray key
   changes every identifier and every drawn value in the locked datasets. A new field must be gated
