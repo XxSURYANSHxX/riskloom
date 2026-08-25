@@ -429,6 +429,91 @@ named future work; reproduce the measurement with `riskloom.analysis.blindspot`.
   decision-boundary tie-cluster, the Day 6 live-serving blind spot and the Day 9 PSI degeneracy,
   this is a measured and disclosed limitation; keep it disclosed.
 
+## Runtime artifact distribution invariants
+
+- Runtime artifacts stay Git-ignored and must never enter a commit. `artifacts/` is ignored on
+  purpose: committing generated output would misrepresent it as source, and regenerating it
+  elsewhere would produce a different model and invalidate every published hash. Distribute the
+  release bundle instead; never relax the ignore rule to "just ship it".
+- The release bundle contains exactly five files and nothing else: `model.json`,
+  `training_report.json` and `manifest.json` from `artifacts/models/development/`, the feature
+  `manifest.json` from `artifacts/features/development-v1.1.0-config-bound/`, and
+  `evaluation.json` from `artifacts/evaluations/development/`. Never add simulation events, labels,
+  feature rows, feature reports, per-event predictions, identifiers, tokens, credentials, `.env`,
+  or any other generated artifact. Adding a member is a change to what the project publishes about
+  itself and needs its own gate.
+- The four startup members and the evaluation member are distinct requirements. The first four must
+  be present for the service to bind; the evaluation is required only for the complete product
+  (model panel, drift reference, published aggregates) and its absence stays an ordinary state.
+- All five SHA-256 values stay pinned in `src/riskloom/runtime_bundle.py`. The archive's own
+  manifest is checked too, but the pinned constant is the authority: a bundle whose manifest has
+  been re-signed to match a tampered payload must still be refused. Never verify against the
+  archive's declaration alone.
+- The whole archive is pinned separately by `EXPECTED_ARCHIVE_SHA256` and compared immediately
+  after reading, before EOCD parsing, the central-directory walk, `zipfile`, the manifest reader or
+  any member extraction. It is an additional gate, never a substitute for the five member pins.
+  The archive must never record its own outer hash: a container that declares the value it is
+  judged by proves nothing. The build verifies the finished archive against the same constant
+  before publishing, and a mismatch must remove the temporary file without replacing the
+  destination.
+- A download acquires its destination atomically with `O_CREAT | O_EXCL` and never with `"wb"` after
+  an `exists()` check. `"wb"` truncates, so a guard that declines to *delete* an existing file has
+  already destroyed it, and a separate existence check is stale by the time the open happens. An
+  occupied destination fails closed with `runtime_bundle_download_destination_exists` and no byte is
+  written. Cleanup removes the file only when this attempt exclusively created it, driven by that
+  fact rather than by a sampled Boolean.
+- Every download failure removes the file that attempt created and never one that already existed.
+  Use `finally` with a success flag rather than a list of exception types: `httpx.HTTPError` is not
+  an `OSError`, and catching only the latter left partial downloads on disk.
+- Never issue an unbounded read on archive input. Cap it at `MAXIMUM_ARCHIVE_BYTES + 1` on the
+  descriptor already opened, and treat the delivered length as authoritative: a `stat` taken before
+  the read describes an earlier moment, not the allocation.
+- ZIP64 is detected structurally -- the locator only at its one legal position before the EOCD, and
+  sentinel values in the EOCD's own fields -- never by scanning the payload. Signature bytes inside
+  member data are content, not format, and must never classify the archive.
+- Absolutise paths lexically against the working directory before inspecting them for symlinks, and
+  never `resolve()` first: that follows the link the check exists to reject.
+- The installer accepts no arbitrary URL. The release URL, tag and asset name are source constants,
+  there is no URL parameter, no environment variable and no configuration field can redirect it, and
+  redirects are validated hop by hop against an exact GitHub-only host allowlist. Never use suffix
+  matching for that allowlist. Do not add a URL, mirror, "latest release" lookup, or any other
+  general-purpose download surface.
+- The runtime release tag and the source submission tag are separate and must stay separate. A
+  published bundle's manifest records the runtime tag, so that tag can never move; the source tag
+  may be re-cut freely. No code may assume the two are equal.
+- The model is distributed and loaded as canonical JSON only. Never introduce pickle, joblib,
+  cloudpickle, or any other executable model format into the bundle or the loader.
+- Safe archive validation is mandatory and `extractall()` is forbidden. Every member is checked for
+  name safety, regular-file type, encryption, compression method, and size before any bytes are
+  written, and the whole archive is validated before anything is published. Backslash confusion must
+  be checked against raw central-directory names, because `zipfile` normalises separators on read
+  and a check against `ZipInfo.filename` silently cannot fire.
+- Installation never overwrites different existing content and never writes outside the five
+  approved repository-relative paths. An identical file is idempotent; a conflicting one is refused.
+- Installation and preflight must both end by running the ordinary `load_serving_bundle`. Hashes
+  prove the right bytes are present; only the binding proves the service starts. Preflight must
+  check hashes rather than existence, and must never download or install anything.
+- Do not add a startup flag that skips model binding, and do not bake artifacts into the image. They
+  remain read-only mounted inputs.
+- Clean-clone verification against the published release is required after publication and is not
+  satisfied by the local `--archive` drill. Until the release exists, say so plainly rather than
+  implying the download path has been exercised. Never describe a remote download as verified until
+  a real clean clone has performed one.
+- Archive parsing is anchored at the end-of-central-directory record and never scans for record
+  signatures: that byte sequence occurs inside member data, so a scanning parser can be fed forged
+  records. Keep every field bounds-checked, and keep ZIP64, multi-disk, commented and encrypted
+  archives explicitly refused rather than partially supported.
+- Installation rollback is scoped, not transactional. Remove only files the failing attempt created,
+  never a pre-existing identical file, and never conflicting content. Do not claim atomicity across
+  directories.
+- The concurrency trust boundary is the local host. Paths under `artifacts/` are assumed not to be
+  rewritten by another authorised local process between classification and publication. Do not add a
+  lock manager, daemon, or transactional publication framework for it: a process that can win that
+  race can rewrite the artifacts immediately afterwards anyway. Guarantee only what is true -- that
+  concurrent RiskLoom installers publish identical pinned bytes and so cannot corrupt content, and
+  that an installer never deliberately overwrites content it observed to differ. Qualify any
+  unconditional "never overwrites" wording accordingly.
+
 ## Repository and packaging invariants
 
 - `.gitattributes` pins `text=auto eol=lf` and must not be removed or weakened. Three configuration

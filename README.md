@@ -147,22 +147,82 @@ Four boundaries keep the result reproducible and auditable:
 
 - Docker Desktop with Compose
 - [`uv`](https://docs.astral.sh/uv/)
-- The generated development artifact bundle
 - Razorpay test credentials only for creating actual test-mode orders
 - Optional Gemini API access for generated explanations
 
-The generated model and feature artifacts are deliberately excluded from Git. Place the supplied bundle at the documented repository paths before starting the stack.
+The locked model and its manifests are generated artifacts, deliberately excluded from Git:
+committing them would misrepresent generated output as source, and regenerating them elsewhere
+would produce a *different* model and invalidate every hash published here. They are
+distributed as a hash-pinned release bundle instead, which
+`runtime_bundle.py install` downloads and verifies.
+
+> **The runtime release is not published yet.** Until it is, use the offline `--archive` form
+> below. The download path has not been exercised against a real release.
 
 ```powershell
 git clone https://github.com/XxSURYANSHxX/riskloom.git
 cd riskloom
 
 uv sync --frozen
+uv run python scripts/runtime_bundle.py install
 uv run python scripts/preflight_check.py
 
 Copy-Item .env.example .env
 docker compose up --build -d
 ```
+
+The installer downloads one fixed release asset, checks every member against a SHA-256 pinned
+in source, writes only the five approved paths, and then runs the application's own startup
+binding, so a bundle that installs but cannot serve is reported as a failure. It accepts no URL
+argument and reads no environment override.
+
+Already have the archive? Install it with no network access at all:
+
+```powershell
+uv run python scripts/runtime_bundle.py install `
+  --archive C:\path\to\riskloom-runtime-artifacts.zip
+```
+
+Build the archive yourself from an existing installation:
+
+```powershell
+uv run python scripts/runtime_bundle.py build `
+  --output dist/riskloom-runtime-artifacts.zip
+```
+
+Verify an existing installation at any time:
+
+```powershell
+uv run python scripts/runtime_bundle.py verify --require-evaluation
+```
+
+<details>
+<summary>What the bundle contains, and what it never contains</summary>
+
+Five canonical JSON artifacts, 55,743 bytes in total:
+
+| Path | Purpose |
+| --- | --- |
+| `artifacts/models/development/model.json` | the locked model and its threshold |
+| `artifacts/models/development/training_report.json` | required by the strict model-directory check |
+| `artifacts/models/development/manifest.json` | model identity and source contract |
+| `artifacts/features/development-v1.1.0-config-bound/manifest.json` | feature-configuration binding |
+| `artifacts/evaluations/development/evaluation.json` | held-out aggregates, drift reference, model panel |
+
+The first four are required to start. The fifth is required for the complete product: without it the
+service still starts and scores normally, but the dashboard's model panel answers 404 and the drift
+endpoint has no reference.
+
+It contains **no** simulation events, labels, feature rows, feature reports, per-event predictions,
+campaign or event identifiers, pseudonymous entity tokens, raw payment data, credentials, `.env`,
+API keys, webhook secrets, PII, database contents, caches, or logs. Every member is aggregate JSON
+that this repository already publishes hashes for.
+
+The bundle is published under its own immutable runtime tag, `v1.0.3-runtime`, which is
+separate from the source snapshot tag `v1.0.3-submission`. Keeping them apart means the source
+can be re-tagged without invalidating a published asset or forcing a re-upload.
+
+</details>
 
 Open the dashboard:
 
@@ -246,6 +306,17 @@ Integration tests use disposable PostgreSQL and fake every Razorpay and Gemini c
 | `training_report.json` | `4ff96556f1df49d7c44c29703c328753a6ea0ef197410976100e84751943ea6d` |
 | `manifest.json` | `00aa16380eee1dcfa26fe9c89ed0eb8f866e75e98bd7a7ba89f9cc228c792f2e` |
 | `evaluation.json` | `11251cef0dade5d14d2d1a85fe3822126e01c2a354494dd09b720c679244c40d` |
+| feature `manifest.json` | `15337d0e9220f7ca96b4ded8157bc3ad29f38a6c5db9d357dea00b09371f28ba` |
+
+These five values are pinned in `src/riskloom/runtime_bundle.py`, so the installer refuses any
+archive whose contents differ, including one whose own manifest has been re-signed to match a
+tampered payload.
+
+The whole archive is pinned separately, and checked before any parsing at all, so a reshaped or
+tampered file is rejected by a hash comparison rather than by format-parsing code. The archive does
+not record its own outer hash — that value lives only in source, because a container that declares
+the value it is judged by proves nothing. The five member hashes remain independently authoritative:
+both layers must hold.
 
 </details>
 

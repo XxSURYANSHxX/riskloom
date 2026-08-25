@@ -39,6 +39,7 @@ locally generated datasets; it is not an offensive testing tool and can reach no
 | [Day 8](#day-8-llm-generated-incident-explanations) | Safe explanations | Structured post-decision Gemini enrichment | Optional provider and local-only scope |
 | [Day 9](#day-9-failure-injection-drift-detection-and-docker-packaging) | Failure and drift testing | Database drills, PSI diagnostics, Docker | Frozen-database latency and coarse PSI |
 | [Gate H0](#gate-h0-adversarial-stress-test) | Adversarial stress | Locked-model evasion evaluation | Boundary-spacing and distribution-shift weaknesses |
+| [Gate I0](#gate-i0-public-runtime-artifact-distribution) | Public runtime distribution | Deterministic hash-pinned bundle, corrected preflight, reviewed archive reader | Release not yet published; remote download untested |
 
 ## Contents
 
@@ -54,6 +55,7 @@ locally generated datasets; it is not an offensive testing tool and can reach no
 - [Day 8 LLM-generated incident explanations](#day-8-llm-generated-incident-explanations)
 - [Day 9 failure injection, drift detection, and Docker packaging](#day-9-failure-injection-drift-detection-and-docker-packaging)
 - [Gate H0 adversarial stress test](#gate-h0-adversarial-stress-test)
+- [Gate I0 public runtime artifact distribution](#gate-i0-public-runtime-artifact-distribution)
 - [Current verified state](#current-verified-state)
 
 ## Day 1 capabilities
@@ -1060,6 +1062,360 @@ Verified after the change: `development` still fingerprints to `140ecd643528fadc
 dataset id `5f8e96be454b50ea...` with identical `events.jsonl` and `labels.jsonl` hashes. All three
 Day 4 model hashes and `evaluation.json` are unchanged.
 
+## Gate I0 public runtime artifact distribution
+
+Every gate before this one assumed the locked artifacts were already on disk. They are on the
+machine that produced them, and nowhere else. This gate makes them obtainable.
+
+### Why the previous clone was incomplete
+
+`git clone` produces a checkout that cannot start. That is deliberate and stays deliberate: the
+model, its manifests and the held-out evaluation are generated artifacts, `artifacts/` is
+Git-ignored, and committing them would misrepresent generated output as source. Regenerating them
+in a fresh clone is worse still -- it would produce a *different* model and invalidate every hash
+this project publishes.
+
+What was missing was not a decision but a distribution channel. The README said a "generated
+development bundle" must be supplied and named the paths; it never said where to obtain one. For
+anybody other than the author that is not a runnable instruction.
+
+**Design decision.** Publish the artifacts as a GitHub Release asset and install them through a
+hash-pinned installer, rather than committing them, baking them into the image, or adding a
+regeneration path. All three alternatives were rejected: the first breaks the project's own rule,
+the second breaks the read-only mounted-input model Day 9 established, and the third breaks the
+locked-artifact contract outright.
+
+### Measured result: preflight passed on a directory the application refuses
+
+`scripts/preflight_check.py` checked `model.json` and `manifest.json`. It did not check
+`training_report.json`. `load_locked_model` requires the model directory to contain *exactly*
+`model.json`, `training_report.json` and `manifest.json`, and rejects any other set with
+`locked_model_artifact_set_invalid`.
+
+So a directory holding two of the three files passed preflight and then failed startup. This was
+reproduced on a clean clone before the fix, where the old script reported:
+
+```text
+3 required file(s) missing. The service will refuse to start.
+  artifacts/models/development/model.json
+  artifacts/models/development/manifest.json
+  artifacts/features/development-v1.1.0-config-bound/manifest.json
+```
+
+Four files are actually required, and the one it never mentions is the one whose absence produces
+the least obvious failure. A second, quieter defect sat beside it: preflight checked *existence*,
+so a truncated or edited artifact passed too.
+
+**Both are fixed.** Preflight now checks all four startup artifacts against pinned hashes,
+distinguishes present-and-valid from missing from present-but-invalid, reports the evaluation
+separately as a complete-product requirement, and finishes by running the same
+`load_serving_bundle` the application runs at startup.
+
+### Exact bundle contents
+
+Five canonical JSON artifacts, 55,743 bytes:
+
+| Member | Bytes | Role |
+| --- | ---: | --- |
+| `artifacts/models/development/model.json` | 18,537 | locked model, calibrator and threshold |
+| `artifacts/models/development/training_report.json` | 29,060 | required by the strict directory check |
+| `artifacts/models/development/manifest.json` | 3,557 | model identity and source contract |
+| `artifacts/features/development-v1.1.0-config-bound/manifest.json` | 898 | feature-configuration binding |
+| `artifacts/evaluations/development/evaluation.json` | 3,691 | held-out aggregates, drift reference, model panel |
+
+The first four are required to start. The fifth is required for the complete product: without it
+the service starts and scores normally, the dashboard model panel answers 404, and the drift
+endpoint has no reference.
+
+Nothing else is distributed. No simulation events, labels, feature rows, feature reports, per-event
+predictions, campaign or event identifiers, pseudonymous tokens, raw payment data, credentials,
+`.env`, API keys, webhook secrets, PII, database contents, caches or logs. The 276 MB
+`features.jsonl` sitting beside the feature manifest is not a member, and a test asserts that no
+member name can be a dataset-level artifact.
+
+### Hash-pinning design
+
+All five SHA-256 values are constants in `src/riskloom/runtime_bundle.py`. The archive also carries
+its own manifest declaring each member's size and digest, and both are checked -- but the pinned
+value is the authority. That distinction is load-bearing: an attacker who edits an artifact *and*
+re-signs the bundle manifest to match produces an internally consistent archive, and only the
+pinned constant rejects it. There is a test for exactly that case.
+
+The bundle manifest records the product marker, artifact type, bundle schema version, intended
+release tag, the member allowlist, per-member size and hash, and the source model and feature
+dataset identities. It does not record its own hash, matching every other manifest here.
+
+### Deterministic bundle evidence
+
+Fixed member order, DOS-epoch timestamps, fixed `0o644` mode, and `ZIP_STORED` -- stored rather
+than deflated, so the bytes cannot depend on a zlib version. Two builds from the same approved
+inputs, written to different paths, were compared:
+
+```text
+build A sha256 = 113e4307ecffed8e87e371fd08dbc7c1d5f07eae5943081d73efc4132a434ce2
+build B sha256 = 113e4307ecffed8e87e371fd08dbc7c1d5f07eae5943081d73efc4132a434ce2
+byte-identical = True   (58,073 bytes)
+```
+
+### Safe extraction rules
+
+`extractall()` is never used. Before anything is written, the archive is rejected for a missing,
+unknown or duplicate member; an absolute, traversing or backslash-confused name; a directory,
+symlink, device or other non-regular entry; an encrypted member; any compression method other than
+stored; an oversized member, total or archive; a non-canonical or wrongly-identified bundle
+manifest; a declared size or hash that disagrees with the payload; and a payload that disagrees
+with the pinned hash.
+
+One of those checks needed a real implementation rather than a nominal one. CPython's `zipfile`
+rewrites a backslash to `/` while reading the central directory, so a backslash check applied to
+`ZipInfo.filename` can never fire -- such an archive would still be refused, but as an *unknown
+member*, by accident. The validator therefore parses raw central-directory names itself and checks
+those. Rejected for the right reason and rejected by luck are different guarantees, and only the
+first survives a future change to the allowlist.
+
+Installation writes only the five approved repository-relative paths, stages through a
+process-owned directory on the destination filesystem, publishes data files before the manifests
+that describe them, refuses symlinked destinations, refuses an unknown file in the strict model
+directory, and never overwrites different existing content -- an identical file is treated as
+already installed, so re-running is idempotent. It finishes by calling `load_serving_bundle`, so a
+bundle that installs cleanly but cannot serve is reported as a failure rather than a success.
+
+The downloader takes no URL. It requests one source-controlled constant, follows redirects manually
+so that every hop is checked against a GitHub-only host allowlist rather than only the first, uses
+a bounded timeout, enforces a maximum size while streaming, refuses an empty response, writes only
+to a process-owned temporary file, and deletes it afterwards. No response body or header is ever
+logged. Automated tests use a mocked transport and make no real request.
+
+### No retraining, no held-out reopening
+
+This gate moves bytes. It does not train, evaluate, score, generate features, read labels, or open
+the protected held-out partition; what it does with `evaluation.json` is copy it. All five hashes
+were re-checked before and after implementation and are unchanged.
+
+### Local clean-clone drill
+
+Remote publication is out of scope for this gate, so the workflow was rehearsed locally. A fresh
+`git clone` was made to a temporary path with no `artifacts/` directory at all, the bundle was
+installed from the locally built archive with `--archive` (no network access), and the stack was
+started on isolated ports under its own Compose project:
+
+| Step | Result |
+| --- | --- |
+| Preflight before install | exit 1, names all four startup files including `training_report.json` |
+| `install --archive` | five members installed, serving binding verified, exit 0 |
+| Installed hashes | all five match the pinned values |
+| Re-install | all five reported unchanged, exit 0 |
+| Preflight after install | exit 0, binding succeeds |
+| `GET /health/live` | 200 `{"status":"ok"}` |
+| `GET /health/ready` | 200 `{"status":"ready","checks":{"database":"ok"}}` |
+| `GET /dashboard` | 200, client loads |
+| `GET /api/v1/dashboard/model` | 200, real `model_id`, 17,000 rows |
+| `GET /api/v1/dashboard/drift` | 200, `reference_rows: 17000` |
+
+The drift endpoint reported `insufficient_data` with a null PSI, which is correct: the ledger held
+zero rows against a 200-row minimum. Only the containers created for the drill were stopped, and
+only the explicitly resolved temporary checkout was removed.
+
+### Two tags, deliberately
+
+The runtime artifacts are published under their own immutable tag, `v1.0.3-runtime`, and the
+source snapshot carries `v1.0.3-submission`. Nothing in the installer assumes they match.
+
+The reason is practical. A published asset's own manifest records the tag it was released under, so
+that tag can never move. A source tag, by contrast, may well need to be re-cut for a documentation
+fix. Binding both to one name would mean every source correction either invalidated a published
+bundle or forced a needless re-upload of bytes that had not changed. A test asserts the two
+constants differ and that the download URL is built from the runtime tag alone.
+
+### Security review (Gate I0.1)
+
+The implementation was re-read adversarially before publication. **Ten defects** were confirmed and
+corrected, each reproduced before it was fixed:
+
+1. The raw central-directory parser scanned for record signatures and was unsound.
+2. Installation had no rollback, so a mid-publication failure left files behind.
+3. The build could write its archive into a protected artifact directory.
+4. The README's documented offline-install command had been corrupted by shell escaping.
+5. The download URL check accepted embedded credentials, a non-default port and a fragment.
+6. A declared `Content-Length` was never checked, and a partial download was left on disk.
+7. ZIP64, multi-disk, commented and data-descriptor archives were not refused.
+8. The bundle manifest schema accepted unknown keys and never cross-checked source identity.
+9. The pinned hash table was mutable, and drift between the three member collections was unchecked.
+10. Member names containing `.`, an empty component, or control characters were not rejected.
+
+Two further changes were made that are **not** defects and are recorded as such: `_refuse_symlinked`
+gained a `boundary` argument so a temporary destination root is walked correctly (the original
+walked to the filesystem anchor, which was more thorough rather than wrong), and preflight now also
+prints the offline `--archive` command, because the plain install command cannot succeed until the
+release exists. Defects 1, 2, 3 and 5 are described in detail below, 4 at the end of this section;
+the remainder are visible in the tests.
+
+One honest note on the third. Two guards were added, `output_inside_artifact_tree` and
+`output_is_source_artifact`, and only the first can currently fire: every approved member lives
+inside a protected directory, so an output path aimed at a source artifact is caught by the
+directory rule before the per-member rule is reached. The second is retained as defence in depth for
+a future member outside those directories, and its test asserts the identity that actually fires
+rather than accepting either.
+
+**The raw central-directory parser was unsound.** It scanned for the `PK\x01\x02` signature, and
+that byte sequence occurs freely inside stored member data. A hostile archive could therefore
+present forged directory records made of its own payload bytes. It was rewritten as an
+EOCD-anchored parse: every field is bounds-checked before it is read, the record count and directory
+extent are validated against the archive size, and ZIP64, multi-disk and commented archives are
+refused explicitly rather than partially handled. A regression test embeds a forged record naming a
+traversal path inside a member and asserts the parser sees only the two genuine members.
+
+**Installation had no rollback.** A publication failure on the third of five files left the first
+two installed, so a retry met a half-populated tree. Installation now classifies every destination
+before writing anything, and on failure removes exactly the files that attempt created -- never a
+pre-existing identical file, and never conflicting content, which is refused before any write.
+Failure injection at each of the five publication steps proves the destination returns to its exact
+pre-install state. This is scoped rollback, not transactional atomicity, and it is not claimed to
+be the latter.
+
+**The build could write into a protected artifact directory.** Nothing stopped
+`build --output artifacts/models/development/bundle.zip`, which would leave a fourth file beside
+the three the strict loader permits and make the very model directory the bundle exists to deliver
+stop loading.
+
+**The download URL check accepted userinfo, a non-default port and a fragment.** A redirect to
+`https://user:pw@github.com/...` or `https://github.com:8443/...` passed. All three are now refused,
+alongside a `Content-Length` over the cap before streaming begins, and a partial download is deleted
+rather than left behind looking like an archive.
+
+Two areas were reviewed and found sound, and are recorded as such: `zipfile` verifies member CRCs at
+EOF, and it detects a central-directory/local-header filename disagreement, so both arrive as
+`runtime_bundle_archive_corrupt` without extra code.
+
+The documented offline-install command in the README was also broken -- `C:\path\to\...` had been
+written through a shell heredoc that turned `\t` and `\r` into a literal tab and newline. Copying it
+would not have worked.
+
+This is a narrow reader for one archive shape, not a hardened general-purpose ZIP implementation.
+Unsupported format features are rejected rather than accommodated, which is a much smaller thing to
+get right.
+
+### Gate I0.3 follow-up corrections
+
+Three reviews, three separate counts, kept separate on purpose. What each review found is itself
+a fact about that review, and merging the numbers would destroy it.
+
+| Review | Result |
+| --- | --- |
+| **I0.1** | **Ten confirmed defects**, enumerated in the section above. Unchanged. |
+| **I0.2** | **Five findings**: M1 (whole-archive hash absent), L2 (partial transport-error cleanup), L3 (relative-path symlink mis-join), L4 (whole-payload ZIP64 signature scan), L5 (check-then-act publication race). |
+| **I0.3** | **Four code corrections**, for M1, L2, L3 and L4. L5 was accepted rather than implemented -- see below. |
+| **I0.4** | Final focused verification. Confirmed all four corrections, and found two further defects plus documentation and hygiene issues. |
+| **I0.5** | Corrected the download ownership and data-preservation defect, and bounded the archive read. |
+
+The four I0.3 corrections follow. L5 is recorded after them as what it is: an accepted finding, not
+an unimplemented one.
+
+**The archive itself was not pinned.** Every *member* was, but the container was not, so hostile
+bytes reached the hand-written EOCD and central-directory arithmetic before meeting any constant.
+`EXPECTED_ARCHIVE_SHA256` now pins the whole published ZIP and is compared immediately after the
+bounded read, ahead of EOCD parsing, the directory walk, `zipfile`, the manifest reader and any
+member extraction. The five member pins are untouched and remain independently authoritative: the
+outer hash is an additional gate, never a substitute. The archive deliberately does not record its
+own outer hash -- a container that declares the value it is judged by proves nothing -- so the
+constant lives only in source. The build command verifies the finished archive against the same
+constant before publishing, and on a mismatch removes the temporary file without replacing whatever
+was at the destination.
+
+**A dropped connection left a partial download on disk.** `_stream_to_file` cleaned up only on
+`RuntimeBundleError`, and `httpx.HTTPError` is not an `OSError`, so a mid-stream transport failure
+skipped both handlers and left a truncated file that looked like an archive. Cleanup is now a
+`finally` with a success flag, covering transport errors, size limits, cancellation and anything
+else that exits early. It removes only a file the attempt itself created, never one that was
+already there, and a cleanup error never replaces the original failure.
+
+**ZIP64 detection scanned the whole payload.** `PK\x06\x06` inside a member's stored data is
+ordinary content, and letting it classify the archive handed that decision to whoever supplied the
+bytes -- the same unsoundness the central-directory parser had already been rewritten to avoid.
+Detection is now structural: the locator is examined only at its one legal position, the twenty
+bytes immediately preceding the EOCD, and ZIP64 sentinel values in the EOCD's own fields are
+refused rather than truncated to 32 bits. Multi-disk refusal is unchanged and no new scan was added.
+
+**Relative-path symlink inspection checked the wrong file.** `_refuse_symlinked` joined a relative
+path to the traversal boundary rather than the working directory, so `dist/bundle.zip` was inspected
+as `C:\dist\bundle.zip` -- a path that does not exist, so the check passed vacuously every time.
+Paths are now absolutised lexically against the working directory, without `resolve()`, which would
+follow and hide the very link that must be rejected. The three public entry points absolutise their
+root, making the helper's absolute-path contract true instead of assumed.
+
+Two test weaknesses were corrected alongside them. `test_a_failed_build_leaves_no_partial_archive`
+forced its failure in `_read_approved_artifact`, which runs *before* the output directory is
+created, so its `.partial` assertion sat behind an `if` that made it vacuously true -- it asserted
+nothing. It now fails after the staging archive exists and asserts unconditionally.
+`test_a_malformed_content_length_is_refused` used a bare `pytest.raises` that would have passed on
+any download failure; it now pins `download_length_invalid` and snapshots the filesystem.
+
+#### I0.2 finding 5 — accepted, bounded residual risk
+
+**The concurrency boundary, stated plainly.** Publication classifies destinations first and writes
+second, and those two steps are not one atomic operation across three directories. The trust
+boundary is the local host: paths under `artifacts/` are assumed not to be rewritten by another
+authorised local process during that short interval. Engineering around it would buy nothing, since
+a process able to win that race can equally rewrite the artifacts a moment after installation
+finishes. What is guaranteed, and tested deterministically without threads or sleeps, is that two
+RiskLoom installers can only ever publish the same pinned byte sequences, so concurrent installs
+cannot interleave into corrupt content; and that an installer never deliberately overwrites content
+it observed to differ. "Never overwrites a differing file" is therefore a statement about what the
+installer intends, not a lock.
+
+### Gate I0.5 corrections
+
+A final focused review (I0.4) went over the I0.3 corrections and confirmed all four. It also found
+two real defects in the code those corrections had touched, which are fixed here.
+
+**A download could destroy the file it refused to delete.** `_stream_to_file` asked
+`destination.exists()`, then opened `"wb"`. Two defects in one line: `"wb"` truncates, so an
+existing file was already emptied by the time the cleanup guard politely declined to delete it; and
+the answer to `exists()` could be stale by the time the open happened, so a file another process
+created in that window would be truncated *and* then removed. Ownership is now acquired atomically
+with `O_CREAT | O_EXCL`: either the kernel says this attempt created the file, or the download
+refuses with `runtime_bundle_download_destination_exists` without writing a byte. Cleanup follows
+from that single fact rather than from a Boolean sampled earlier.
+
+The test for that guarantee was worse than the defect. It asserted only that the destination still
+existed -- which an emptied file satisfies -- so it passed against a file whose contents had just
+been destroyed. It now asserts the bytes.
+
+**The archive read was bounded, and then unbounded.** `stat().st_size` was checked against the
+ceiling and `Path.read_bytes()` immediately read to EOF with no limit, so the bound described an
+earlier moment rather than the allocation: a file that passed the check and then grew was read in
+full. The read is now capped at `MAXIMUM_ARCHIVE_BYTES + 1` on the same descriptor that was opened,
+with the extra byte distinguishing "at the ceiling" from "over it". The `fstat` check remains as an
+early rejection, but it is an optimisation; the cap is the guarantee.
+
+This is not a claim that local check/use races are gone. The file can still change between the
+symlink check and the open. What is removed is the unbounded allocation: the worst a racing writer
+can now achieve is one byte past the documented ceiling.
+
+Two smaller I0.4 findings were also addressed: the build log's review accounting said "four more
+things" where I0.2 had five findings, losing L5 (corrected in the table above), and
+`ZIP64_END_SIGNATURE` was a named constant with no executable consumer, which read as a check that
+did not exist. It was removed rather than given a check to justify it -- the ZIP64 end record is
+reachable only through the locator, which is checked, and any EOCD field needing it carries a
+sentinel, which is rejected.
+
+What remains true and unchanged: the whole-archive hash gate still runs before every ZIP parser;
+the five member hashes remain independently authoritative; no parser ever sees an oversized archive;
+multi-directory publication is still not atomic; rollback is still best-effort; and the remote
+release download is still unproven.
+
+### Known limitation: the remote path is untested
+
+**The GitHub Release does not exist.** Tag `v1.0.3-runtime` has not been created and
+`riskloom-runtime-artifacts.zip` has not been uploaded anywhere. Everything above was proven against
+a locally built archive through the `--archive` path; the download path was exercised only against a
+mocked transport, which asserts the request goes to the fixed URL and nowhere else.
+
+Until the release is published, `runtime_bundle.py install` without `--archive` fails with
+`runtime_bundle_download_failed`. Verifying a genuinely clean remote clone -- clone, `uv sync`,
+install, preflight, compose up -- remains required after publication and has not been done. No claim
+of remote success appears anywhere in this repository.
+
 ## Current verified state
 
 Reproduced on the repository as it stands, on Windows with Python 3.11 and the pinned lock file.
@@ -1067,11 +1423,11 @@ Every figure below is the result of running the command, not a recollection.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Test suite | `uv run pytest --cov=riskloom --cov-fail-under=90` | **941 passed**, 0 failed |
-| Coverage | same run, branch-aware | **90.28%** (gate: 90%) |
-| Format | `uv run ruff format --check .` | 193 files already formatted |
+| Test suite | `uv run pytest --cov=riskloom --cov-fail-under=90` | **1,106 passed**, 0 failed |
+| Coverage | same run, branch-aware | **90.21%** (gate: 90%) |
+| Format | `uv run ruff format --check .` | 196 files already formatted |
 | Lint | `uv run ruff check .` | All checks passed |
-| Types | `uv run mypy src` | No issues in 102 source files |
+| Types | `uv run mypy src` | No issues in 103 source files |
 | Migrations | `uv run alembic check` | No new upgrade operations detected |
 | Lock | `uv lock --check` | Resolved 61 packages, lock up to date |
 
