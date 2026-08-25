@@ -1,307 +1,244 @@
+<div align="center">
+
 # RiskLoom
 
-**A defense-only, shadow-mode AI risk manager for coordinated card-testing fraud.**
-Built for the Razorpay AI Buildathon, Track 02.
+### Detect coordinated card testing before a checkout becomes a loss
 
-Card testing is defined by *reuse*: one attacker driving many small authorization attempts across
-shared devices, networks and instruments to find live cards. RiskLoom detects that shape. It scores
-a live checkout attempt against a locked, calibrated model using 75 causal features computed from
-event history, writes an append-only audit ledger, and surfaces the result on an operations
-dashboard with an LLM-written explanation of *why*.
+[![Razorpay Buildathon](https://img.shields.io/badge/Razorpay_AI_Buildathon-Track_02-0B72E7?style=flat-square)](https://razorpay.com/buildathon)
+![Held-out recall](https://img.shields.io/badge/held--out_recall-97.6%25-16803A?style=flat-square)
+![False-positive rate](https://img.shields.io/badge/false--positive_rate-0.60%25-16803A?style=flat-square)
+![Defense only](https://img.shields.io/badge/scope-defense_only-5C2D91?style=flat-square)
 
-It is shadow-mode by construction. RiskLoom never captures, refunds, or blocks a payment. A DENY
-means no Razorpay order is created; nothing else in the payment flow is touched. Every external
-integration is test-mode only, and live-mode API keys are rejected at startup.
+**Live checkout scoring · campaign coordination · explainable decisions · append-only audit trail**
 
----
+[Results](#held-out-evaluation) · [How it works](#how-it-works) · [Run locally](#run-locally) · [Safety](#safety-by-design) · [Limitations](#what-testing-revealed)
 
-## Held-out results
+</div>
 
-Measured once, on a held-out partition the model had never seen, through the same portable
-inference path the live service uses:
+<p align="center">
+  <img src="docs/assets/riskloom-coordination.png" alt="RiskLoom coordination dashboard connecting checkout decisions through a shared device and network" width="100%">
+</p>
 
-| Metric | Value |
+<p align="center"><sub>A shared-signal view of 32 live decisions, with locked held-out model metrics shown separately from live traffic.</sub></p>
+
+## Why RiskLoom
+
+Card-testing attempts often look harmless in isolation. The amounts are small, the instruments keep changing, and each checkout can resemble an ordinary failure. The pattern becomes visible only when activity is connected across devices, sessions, networks, instruments, merchants, and time.
+
+RiskLoom finds that coordination while a checkout is still in progress. It computes 75 causal temporal features, scores the attempt with a locked calibrated model, returns `ALLOW`, `REVIEW`, or `DENY`, and records the evidence behind the outcome. Operators can watch the pattern form in real time without giving an LLM or dashboard control over the decision.
+
+RiskLoom is defense-only and shadow-mode by construction. It uses synthetic data and Razorpay test mode. It never captures, refunds, settles, or modifies a payment.
+
+## What it does
+
+- Scores a checkout before Razorpay order creation.
+- Detects repeated infrastructure and coordinated activity over time.
+- Keeps feature computation causal through a compute-before-update state engine.
+- Loads the selected model from strict JSON rather than pickle or joblib.
+- Writes every final decision to an append-only audit ledger.
+- Shows decisions, shared-token coordination, model evaluation, and drift diagnostics on one dashboard.
+- Generates explanations only after a decision is final.
+
+An `ALLOW` can create a capped Razorpay test-mode order. `REVIEW` and `DENY` create no order. There is deliberately no public order-creation endpoint.
+
+## Held-out evaluation
+
+The final model, calibrator, feature order, threshold, and cost policy were locked before the chronological test period was opened. Nothing was refit after evaluation.
+
+| Metric | Result |
 | --- | ---: |
-| Recall | **0.9765** |
-| Precision | **0.7685** |
-| Average precision | **0.9640** |
-| ROC-AUC | 0.9886 |
+| Test rows | 17,000 |
+| Attack events | 340 |
+| Campaign recall | **100% (3/3)** |
+| Event recall | **97.65%** |
+| Precision | **76.85%** |
+| Average precision | **96.40%** |
+| ROC-AUC | **98.86%** |
 | False-positive rate | **0.60%** |
-| Cost (FN×25 + FP×1) | 300 units |
-| Rows / attacks | 17,000 / 340 |
+| Configured policy cost | **300 units** |
 
-**Read that number honestly.** It describes detection of attacks shaped like the training data. A
-later gate deliberately attacked the detector's own mechanisms and drove recall to between 0.00 and
-0.12 — see [Known limitations](#known-limitations-and-honest-disclosures), which leads with that
-finding rather than burying it.
+### Confusion matrix
 
-The data is synthetic. RiskLoom makes no production fraud-accuracy claim.
+| Actual class | Predicted attack | Predicted legitimate |
+| --- | ---: | ---: |
+| Attack | **332** | 8 |
+| Legitimate | 100 | **16,560** |
 
----
+The policy cost is `false positives × 1 + false negatives × 25`. These are transparent decision weights, not estimates of merchant losses in rupees.
 
-## Architecture
+All results come from deterministic synthetic data. They demonstrate the behavior of this implementation under its documented data model, not production fraud accuracy.
 
-```
-                          ┌──────────────────────────────────────────┐
-   Razorpay test-mode ───▶│ webhook ingest  HMAC · idempotent · redacted
-                          └──────────────────────────────────────────┘
-                                            │ append-only observations
-                                            ▼
-  ┌────────────────┐   events    ┌────────────────────┐   75 features
-  │  simulator     │────────────▶│  causal feature    │───────────────┐
-  │  deterministic │             │  engine  (Day 3)   │               │
-  └────────────────┘             └────────────────────┘               ▼
-                                       compute-before-update   ┌──────────────┐
-                                       sliding 60/300/3600s    │ locked model │
-                                                               │  + threshold │
-                                                               └──────────────┘
-                                                                      │
-   POST /checkout/preflight ──▶ claim → score → act → finalise ───────┘
-        │                        (idempotent, fail-safe to REVIEW)
-        │                                   │
-        │                                   ├──▶ Razorpay order (ALLOW only, capped)
-        │                                   └──▶ risk_decisions ledger (append-only)
-        ▼                                              │
-   ALLOW / REVIEW / DENY                               ▼
-                                    ┌───────────────────────────────────┐
-                                    │ dashboard (read-only)             │
-                                    │  stream · coordination · ledger   │
-                                    │  case detail + LLM explanation    │
-                                    │  PSI drift (informational)        │
-                                    └───────────────────────────────────┘
+## Product walkthrough
 
-   offline only, unreachable from any decision:
-     policy engine (built, neither candidate approved) · adversarial stress · blind-spot analysis
-```
+### A coordinated burst changes the decision
 
-Isolation is enforced, not intended. Static AST checks plus fresh-interpreter probes assert that
-the decision path cannot reach the policy engine, the drift module, the explanation generator or the
-offline analysis packages — and that none of them can reach it.
+The dashboard can post a local synthetic burst through the same preflight endpoint used by normal requests. Reuse accumulates across the shared device and network, and the sequence moves from `ALLOW` to `REVIEW` and then `DENY`.
 
----
+![RiskLoom live decision stream showing an attack burst progressing from allow to review and deny](docs/assets/riskloom-live-stream.png)
 
-## Run it
+### A decision remains inspectable
 
-**You need two things: this repository, and the generated-artifact bundle.**
+The detail view separates the locked model result from the final action, lists only stored pseudonymous attributes, and shows prior ledger co-occurrence. The explanation is generated from stored aggregates after the decision is final and cannot change it.
 
-A `git clone` alone **cannot** start the service. The locked model, its manifest and the feature
-manifest are deliberately excluded from version control — committing them would misrepresent
-generated artifacts as source, and regenerating them elsewhere would produce a *different* model and
-break every hash in this document. They are inputs, supplied alongside the clone.
-
-```powershell
-# 1. Confirm the artifact bundle is in place. Names exactly what is missing if it is not.
-uv run python scripts/preflight_check.py
-
-# 2. Configure. The placeholders are valid for startup; real Razorpay test keys are only
-#    needed to create actual orders, and the Gemini key is optional.
-Copy-Item .env.example .env
-
-# 3. Bring up the full stack: postgres → migrations → app.
-docker compose up --build -d
-
-# 4. Open the dashboard.
-Start-Process http://127.0.0.1:8000/dashboard
-```
-
-Prerequisites: [uv](https://docs.astral.sh/uv/), Docker Desktop with Linux containers. Python 3.11
-is fetched by uv; no local PostgreSQL client is required.
+![RiskLoom denied decision with probability, threshold, shared-signal evidence, and generated explanation](docs/assets/riskloom-decision-deny.png)
 
 <details>
-<summary>Port already in use, or running without Docker</summary>
+<summary>View ALLOW and REVIEW decision examples</summary>
 
-Host ports `5432` and `8000` must be free. If either is taken, set both values in `.env` — Compose
-and the application must agree:
+#### Allowed checkout
 
-```dotenv
-RISKLOOM_DATABASE_URL=postgresql+asyncpg://riskloom:riskloom_local_only@127.0.0.1:5433/riskloom
-RISKLOOM_POSTGRES_PORT=5433
-RISKLOOM_APP_PORT=8001
-```
+The model score remains below the locked threshold and a capped test-mode order is created.
 
-Keep `.env.example` at the documented defaults and use `.env` for machine-specific overrides.
+![RiskLoom allowed checkout with test-mode Razorpay order](docs/assets/riskloom-decision-allow.png)
 
-To run the app on the host instead of in a container, start only the database and run the
-migrations and server yourself:
+#### Review fallback
 
-```powershell
-docker compose up -d --wait postgres
-uv run alembic upgrade head
-uv run uvicorn riskloom.main:app --port 8000
-```
+The model result is preserved separately from the operational action. In this example, order-budget exhaustion safely downgrades the action to `REVIEW`.
 
-On Windows, clone into a short path such as `C:\riskloom`. A deep path can exceed the 260-character
-limit and break loading of compiled dependencies.
+![RiskLoom review decision caused by order budget exhaustion](docs/assets/riskloom-decision-review.png)
+
 </details>
 
-### Score a checkout
+### The ledger preserves the final record
 
-```powershell
-$body = @{
-  event_id = "evt_00000000000000000000000000000f01"
-  merchant_id = "mrc_00000000000000000000000000000001"
-  checkout_id = "chk_00000000000000000000000000000f01"
-  customer_token = $null
-  device_token = "dev_00000000000000000000000000000f01"
-  network_token = "net_00000000000000000000000000000f01"
-  session_token = "ses_00000000000000000000000000000f01"
-  payment_instrument_token = "pmt_00000000000000000000000000000f01"
-  amount_subunits = 25000; currency = "INR"; channel = "web"
-} | ConvertTo-Json
+The read-only ledger brings together the model risk, final action, fail-safe reason, test order reference, and pseudonymous entity tokens. Repeated requests remain idempotent rather than creating a second effect.
 
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/checkout/preflight `
-  -ContentType application/json -Body $body
+![RiskLoom append-only audit ledger containing allow, review, and deny decisions](docs/assets/riskloom-audit-ledger.png)
+
+## How it works
+
+```text
+Razorpay test-mode checkout
+          │
+          ▼
+  Checkout preflight API
+          │
+          ├── validate request and merchant scope
+          ├── resolve prior temporal state
+          └── compute 75 causal features
+                         │
+                         ▼
+                 Locked JSON model
+                 + Platt calibrator
+                 + locked threshold
+                         │
+                         ▼
+                ALLOW / REVIEW / DENY
+                         │
+             ┌───────────┴───────────┐
+             ▼                       ▼
+      Append-only ledger       Explanation job
+             │                 current decision excluded
+             ├───────────────┐       │
+             ▼               ▼       ▼
+       Operator dashboard  Coordination graph  LLM explanation
 ```
 
-Every token is a pseudonymous `prefix_<32 hex>` value; the request schema rejects anything else, and
-rejects any field that looks like PII. Repeat the call with the same `event_id` to see idempotency:
-the second response carries `"duplicate": true` and creates no second effect.
+Four boundaries keep the result reproducible and auditable:
 
----
+1. **Causal state:** an event is scored from observations that existed before it; the current event is added only afterward.
+2. **Chronological isolation:** training, calibration fitting, policy selection, and final test are separate periods with separate interfaces.
+3. **Portable inference:** the model is validated JSON data with no arbitrary code-loading surface.
+4. **Explanation isolation:** Gemini receives allowlisted aggregates after the outcome and has no path back to scoring or payment behavior.
 
-## API
+## Run locally
 
-| Method | Path | Purpose |
+### Requirements
+
+- Docker Desktop with Compose
+- [`uv`](https://docs.astral.sh/uv/)
+- The generated development artifact bundle
+- Razorpay test credentials only for creating actual test-mode orders
+- Optional Gemini API access for generated explanations
+
+The generated model and feature artifacts are deliberately excluded from Git. Place the supplied bundle at the documented repository paths before starting the stack.
+
+```powershell
+git clone https://github.com/XxSURYANSHxX/riskloom.git
+cd riskloom
+
+uv sync --frozen
+uv run python scripts/preflight_check.py
+
+Copy-Item .env.example .env
+docker compose up --build -d
+```
+
+Open the dashboard:
+
+```text
+http://127.0.0.1:8000/dashboard
+```
+
+Check readiness:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health/ready
+```
+
+The placeholders in `.env.example` are sufficient for startup. Real Razorpay test credentials are needed only when an `ALLOW` should create a test order. Never commit `.env`.
+
+<details>
+<summary>API surface</summary>
+
+| Method | Route | Purpose |
 | --- | --- | --- |
-| GET | `/health/live` | process only |
-| GET | `/health/ready` | PostgreSQL connectivity |
-| POST | `/api/v1/webhooks/razorpay` | signed Razorpay webhooks |
-| POST | `/api/v1/checkout/preflight` | score one live checkout attempt |
-| GET | `/api/v1/dashboard/summary` | ledger counts and provenance |
-| GET | `/api/v1/dashboard/decisions` | paged decision rows |
-| GET | `/api/v1/dashboard/decisions/{id}` | one decision + ledger context |
-| GET | `/api/v1/dashboard/coordination` | shared-token graph |
-| GET | `/api/v1/dashboard/model` | offline held-out aggregates |
-| GET | `/api/v1/dashboard/drift` | PSI against the locked reference |
-| GET | `/api/v1/dashboard/decisions/{id}/explanation` | read a generated explanation |
-| POST | `/api/v1/dashboard/decisions/{id}/explanation` | generate one |
+| `GET` | `/health/live` | Process liveness |
+| `GET` | `/health/ready` | PostgreSQL readiness |
+| `POST` | `/api/v1/webhooks/razorpay` | Verified Razorpay webhook intake |
+| `POST` | `/api/v1/checkout/preflight` | Score one checkout attempt |
+| `GET` | `/api/v1/dashboard/summary` | Decision and outcome summary |
+| `GET` | `/api/v1/dashboard/decisions` | Paged audit ledger |
+| `GET` | `/api/v1/dashboard/decisions/{id}` | One decision with ledger context |
+| `GET` | `/api/v1/dashboard/coordination` | Shared-token graph |
+| `GET` | `/api/v1/dashboard/model` | Locked model metadata and held-out aggregates |
+| `GET` | `/api/v1/dashboard/drift` | Informational PSI diagnostics |
+| `GET` | `/api/v1/dashboard/decisions/{id}/explanation` | Read an explanation |
+| `POST` | `/api/v1/dashboard/decisions/{id}/explanation` | Generate one explanation enrichment row |
 
-There is deliberately no public order-creation endpoint; the Orders client is an internal adapter.
-The dashboard is read-only apart from that single explanation POST, which writes one enrichment row
-and can alter no decision. Every other verb on every dashboard path answers 405 by routing.
+</details>
 
----
+## Safety by design
 
-## Known limitations and honest disclosures
+- Live-mode Razorpay keys are rejected at startup.
+- Webhooks are verified against their exact raw bytes before parsing.
+- Stored identifiers are strict synthetic or pseudonymous tokens.
+- Raw card details, credentials, full payloads, and PII are never sent to Gemini.
+- LLM output is explanation only and cannot become model evidence or decision authority.
+- Adversarial testing is local, synthetic, and unable to contact an external target.
+- Database failures never produce an unbacked `ALLOW`.
+- The dashboard is read-only apart from explanation enrichment, which cannot alter a decision.
 
-Every limitation below was found by measuring this system rather than by reasoning about it, and
-each was published in the gate that found it. They are collected here so the picture is in one
-place. A system that knows precisely what it cannot do is the point, not an apology.
+## What testing revealed
 
-### 1. The model is evadable by boundary-spaced traffic — recall 0.9765 → 0.00
+The complete measurements and failure narratives are preserved in [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md). The most important open boundaries are summarized here.
 
-This was measured entirely inside RiskLoom's own offline simulator: the evasion traffic is
-synthetic, it is scored against the locked model on the same machine, and nothing in the analysis
-path can reach a real payment system, a real card, or any host outside this sandbox.
+| Test | Finding | Current response |
+| --- | --- | --- |
+| Boundary-spaced evasion | Recall fell to **0.00-0.12**; exact 3,600-second spacing detected **0/120** attack events | Kept the locked model unchanged, published the failure, and scoped longer-horizon and spacing-aware features for a future schema |
+| Live-state replay | Recall moved from **0.856 to 0.600** and policy cost from **763 to 2,279** under live-serving assumptions | Offline held-out metrics are never presented as measured live accuracy |
+| Threshold ties | The locked threshold sits one floating-point step above an eight-row probability cluster | Portable inference parity and a non-fatal boundary diagnostic are tested |
+| Midrange calibration | Middle probability bands are overconfident despite low overall ECE | Reliability tables remain visible and no test-tuned recalibration was performed |
+| Candidate policy | A lower-cost banded policy exceeded the false-positive ceiling | Activation was refused and the incumbent threshold remained locked |
+| Frozen database | Failure remains safe, but latency is not fully bounded when a socket stays open without responding | The API returns `503`; the timeout limitation remains documented |
 
-Attack traffic shaped to defeat the detector's own mechanisms drove recall from 0.9765 to between
-0.00 and 0.12, with cost rising roughly tenfold. Spacing attempts at *exactly* one feature window
-(3600s) achieved **complete evasion**: 0 of 120 events and 0 of 20 campaigns detected, with mean
-attack probability **0.0018 against 0.0092 for legitimate traffic** — the model rated the evasive
-attacks as *less* risky than ordinary customers.
-
-The cause is specific and mechanistic, not a general failure. Rolling windows use a left-exclusive
-`(t - w, t]` cutoff, so an event exactly one window back is already expired; spacing at the window
-length places every prior event on the excluded boundary and every attempt counter reads zero. The
-same model, on the same file, detects baseline-shaped attacks at **83–87%**.
-
-That figure is the exploit's theoretical ceiling — deterministic spacing, no jitter, full knowledge
-of the feature schema — and is **not** what an evasive attacker generally achieves. The fix is
-understood and deliberately not implemented: staggered windows, a longer-horizon window that
-boundary spacing cannot evade simultaneously, or treating suspiciously regular timing as its own
-signal. Any of those needs a schema increment and a re-locked model, which is its own gate.
-
-→ [Full analysis](docs/BUILD_LOG.md#gate-h0-adversarial-stress-test)
-
-### 2. Live-serving accuracy is not measured to held-out standard
-
-At preflight an attempt's outcome does not exist yet, so live serving advances feature state with
-every attempt recorded as authorized. The 57 outcome-independent features are exact; the 18
-failure-derived ones read low. Quantified, not assumed — replaying 9,000 events under both
-assumptions gives recall 0.856 → 0.600, precision 0.577 → 0.184, FPR 1.28% → 5.43%, and cost 763 →
-2,279 (**+199%**). Held-out numbers must not be quoted as live-serving accuracy.
-
-→ [Detail](docs/BUILD_LOG.md#known-limitation-live-serving-accuracy-is-not-measured-to-held-out-standard)
-
-### 3. The locked threshold sits one ULP above a tie cluster
-
-The model produces only 15 distinct calibrated probabilities across 7,952 selection rows, so
-probabilities arrive in large ties. The locked threshold lands one unit in the last place above a
-cluster of eight rows, so portable inference allows rows the training report recorded as denied. No
-published held-out number is affected — Gate B2 computed every figure through portable inference.
-Monitored by a non-fatal `validate-model` diagnostic rather than silently re-locked.
-
-→ [Detail](docs/BUILD_LOG.md#decision-boundary-diagnostic)
-
-### 4. Calibration is overconfident in the mid probability range
-
-The 0.4–0.8 reliability bins predict materially higher risk than they observe. Expected calibration
-error is low overall because almost all mass sits in the lowest bin, which hides the mid-band error.
-
-### 5. Drift detection is a coarse instrument
-
-PSI is computed against the locked held-out reference, which is degenerate for the purpose: 97.78%
-of rows fall in one bin, five bins are empty, and the decision threshold itself sits *inside* the
-most populated bin, so the binning has almost no resolution where decisions happen. The zero-bin
-epsilon is load-bearing — the same data reads 0.0559 ("no shift") at 1e-3 and 0.2122 ("moderate") at
-1e-6. The surface therefore reports no band at all below 200 rows and always shows per-bin
-contributions.
-
-### 6. A frozen database is not bounded server-side
-
-A database that *refuses* connections fails preflight in about 3s with 503. One that is *frozen*
-keeps its socket open and answers nothing, and neither the connect timeout nor an `asyncio.timeout`
-fires — SQLAlchemy's greenlet bridge does not deliver cancellation into asyncpg's blocked read, so
-the request unwinds only when the connection dies. It still answers 503 and never an unbacked
-ALLOW, so the decision stays fail-closed; the latency is not bounded.
-
-### 7. An orphaned Razorpay order is possible
-
-If storage dies after an ALLOW created an order, the order exists with no ledger record. The caller
-gets 503, the row stays `pending`, and the order id is logged under `preflight_ledger_write_failed`.
-There is no auto-recovery, by design.
-
-### 8. Neither cost-aware policy band was approved
-
-The banded policy beat the incumbent on cost but exceeded the configured false-positive-rate
-ceiling, so approval was refused and the incumbent single threshold remains in force. The comparison
-is published whether the policy wins or loses.
-
-### 9. Operational limits
-
-- **No authentication.** Every endpoint is unauthenticated; acceptable only for a local build.
-- **Live feature state is in-memory.** It does not survive a restart; history features read zero
-  until traffic rebuilds them.
-- **The Razorpay order cap is per-process, not cumulative.** `razorpay_max_orders_per_process`
-  bounds one running process, and the counter lives in memory, so restarting the container resets
-  it. The **orders created** total in the ledger is cumulative across process lifetimes and can
-  therefore legitimately exceed the configured cap — that is the documented design, not a bypassed
-  guardrail. The guarantee is that no single process ever exceeds it.
-- **Review items cannot be worked.** They are recorded and counted, never resolved or overridden.
-- **Explanations are enrichment, never evidence.** Generated after the fact from stored aggregates,
-  with no path to any decision. Free-tier terms may permit training on submitted content, which is
-  precisely why the input contract carries only aggregates and enums.
-- **The coordination graph is not campaign detection.** It is a projection of shared stored tokens;
-  no model decides that those decisions form a campaign.
-
----
+Operationally, this is still a local shadow-mode build: endpoints are unauthenticated, live feature state is per process, review items are not resolvable through a workflow, and the coordination graph is a shared-token projection rather than a second campaign classifier.
 
 ## Verification
 
-Everything below is expected to pass on a clean checkout with the artifact bundle in place.
-
 ```powershell
-uv sync
-uv run ruff format --check . ; uv run ruff check . ; uv run mypy src
-uv run alembic upgrade head ; uv run alembic downgrade base
-uv run alembic upgrade head ; uv run alembic check
+uv lock --check
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy src
 uv run pytest --cov=riskloom --cov-report=term-missing --cov-fail-under=90
+uv run alembic check
 ```
 
-897 tests, 90% branch coverage. Integration tests start a disposable PostgreSQL 16 container and
-never call Razorpay or Gemini; every external call in the suite is faked.
+Integration tests use disposable PostgreSQL and fake every Razorpay and Gemini call. The suite enforces at least 90% branch-aware coverage.
 
-The four locked artifacts are pinned and verified at every gate:
+<details>
+<summary>Locked artifact hashes</summary>
 
 | Artifact | SHA-256 |
 | --- | --- |
@@ -310,17 +247,23 @@ The four locked artifacts are pinned and verified at every gate:
 | `manifest.json` | `00aa16380eee1dcfa26fe9c89ed0eb8f866e75e98bd7a7ba89f9cc228c792f2e` |
 | `evaluation.json` | `11251cef0dade5d14d2d1a85fe3822126e01c2a354494dd09b720c679244c40d` |
 
----
+</details>
 
-## Deeper reading
+## Technology
 
-| Document | Contents |
-| --- | --- |
-| [docs/BUILD_LOG.md](docs/BUILD_LOG.md) | The day-by-day engineering record: every design decision, what was measured, what was rejected and why |
-| [AGENTS.md](AGENTS.md) | Durable engineering instructions and invariants for anyone changing this codebase |
-| [.env.example](.env.example) | The complete configuration surface |
+- **Serving:** FastAPI, Pydantic, SQLAlchemy, Alembic, PostgreSQL
+- **Modeling:** NumPy, scikit-learn, strict local JSON inference
+- **Payments:** Razorpay test-mode orders and verified webhooks
+- **Explanations:** Gemini behind a non-authoritative enrichment boundary
+- **Operations:** Docker Compose, `uv`, Ruff, mypy, pytest
 
-Settings use the `RISKLOOM_` prefix and secrets are `SecretStr` values that are never interpolated
-into logs or exceptions. Webhook bodies are verified against their exact raw bytes, hashed, and
-discarded; only an allowlisted projection is ever stored. Fixtures use reserved synthetic values
-only.
+## Further reading
+
+- [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md) contains the complete engineering, evaluation, and failure record.
+- [`AGENTS.md`](AGENTS.md) defines the repository's durable safety and implementation rules.
+- [`.env.example`](.env.example) documents the local configuration surface.
+- [Razorpay AI Buildathon](https://razorpay.com/buildathon) contains the Track 02 brief.
+
+## License
+
+RiskLoom is available under the [MIT License](LICENSE).
