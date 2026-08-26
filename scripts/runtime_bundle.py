@@ -13,12 +13,15 @@ SHA-256 of every file. There is no argument that widens any of them.
 no network request at all. Failures print a short stable identity and never artifact contents,
 secrets or upstream response bodies.
 
-Two tags are involved and they are deliberately different. The runtime artifacts live on their own
-immutable release tag; the source snapshot carries the submission tag. Nothing here assumes they
-match, so the source can be re-tagged without invalidating a published asset.
+Runtime and submission snapshots use separate immutable tags: ``v1.0.3-runtime`` for the published
+runtime asset and ``v1.0.3-submission`` for the final verified source snapshot. Nothing here assumes
+the two match, and nothing here depends on the submission tag existing.
 
-The runtime release is not published yet, so ``install`` without ``--archive`` currently fails with
-``runtime_bundle_download_failed``. Use ``--archive`` until it exists.
+Published tags are never moved; later versions use new tags. A published bundle's own manifest
+records the tag it was released under, so moving that tag would make an already-distributed artifact
+describe a commit it did not come from.
+
+The runtime release is published, so ``install`` without ``--archive`` is the normal path.
 """
 
 import argparse
@@ -92,11 +95,15 @@ def _build(output: Path) -> int:
     print(f"RiskLoom runtime bundle: building {len(BUNDLE_MEMBERS)} approved artifacts\n")
     path = build_bundle(output)
     print(f"  wrote {path}")
-    print(f"\nIntended runtime release asset: {RELEASE_TAG}/{ASSET_NAME}")
-    print(f"The source snapshot is tagged separately as {SUBMISSION_TAG}; the two are independent,")
-    print("so the source can be re-tagged without invalidating a published runtime asset.")
+    print(f"\nThe official runtime asset is published at {RELEASE_TAG}/{ASSET_NAME}.")
+    print("Normal installation downloads it:")
+    print("  uv run python scripts/runtime_bundle.py install")
+    print("\n`install --archive <path>` remains available for an archive you already hold.")
+    print("\nRuntime and submission snapshots use separate immutable tags:")
+    print(f"  {RELEASE_TAG}      the published runtime asset")
+    print(f"  {SUBMISSION_TAG}   the final verified source snapshot")
+    print("Published tags are never moved; later versions use new tags.")
     print("The archive is deterministic: the same approved inputs always produce these bytes.")
-    print("\nThe runtime release is not published yet; use `install --archive` until it exists.")
     return 0
 
 

@@ -7,10 +7,11 @@ publishes. Until now the only documented remedy was "copy the supplied bundle in
 not a workflow a stranger can follow.
 
 This module closes that gap without weakening anything. It packages exactly five canonical JSON
-artifacts into a byte-deterministic ZIP, pins their SHA-256 values in source, and installs them
-only after the whole archive has been validated. Every path, every hash and the single download URL
-are compile-time constants: there is no caller-supplied URL, no environment override, no discovery
-step, and no general downloader hiding in here.
+artifacts into a byte-deterministic ZIP -- six members in total, the five artifacts plus one bundle
+manifest that validates the archive and is never installed -- pins their SHA-256 values in source,
+and installs them only after the whole archive has been validated. Every path, every hash and the
+single download URL are compile-time constants: there is no caller-supplied URL, no environment
+override, no discovery step, and no general downloader hiding in here.
 
 Scope, deliberately narrow. This module moves already-approved bytes. It does not train, evaluate,
 score, generate features, read labels, reopen the protected held-out partition, or contact Razorpay,
@@ -76,9 +77,14 @@ BUNDLE_SCHEMA_VERSION = "1.0.0"
 # clean clone receives. It must stay fixed once published, because a published bundle's own manifest
 # records it.
 #
-# ``SUBMISSION_TAG`` names the source snapshot and has nothing to do with the download. Keeping them
-# separate means the source can be re-tagged -- for a documentation fix, say -- without invalidating
-# a published runtime asset or forcing a re-upload. Nothing in this module may assume they match.
+# Runtime and submission snapshots use separate immutable tags: ``v1.0.3-runtime`` for the published
+# runtime asset and ``v1.0.3-submission`` for the final verified source snapshot. Nothing in this
+# module may assume the two match, and nothing here depends on the submission tag existing -- it
+# names a role, not a fact about the repository today.
+#
+# Published tags are never moved; later versions use new tags. A published bundle's manifest records
+# the tag it was released under, so moving that tag would make an already-distributed artifact
+# describe a commit it did not come from.
 RELEASE_TAG = "v1.0.3-runtime"
 SUBMISSION_TAG = "v1.0.3-submission"
 

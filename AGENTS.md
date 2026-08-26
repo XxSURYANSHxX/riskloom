@@ -478,9 +478,13 @@ named future work; reproduce the measurement with `riskloom.analysis.blindspot`.
   redirects are validated hop by hop against an exact GitHub-only host allowlist. Never use suffix
   matching for that allowlist. Do not add a URL, mirror, "latest release" lookup, or any other
   general-purpose download surface.
-- The runtime release tag and the source submission tag are separate and must stay separate. A
-  published bundle's manifest records the runtime tag, so that tag can never move; the source tag
-  may be re-cut freely. No code may assume the two are equal.
+- Runtime and submission snapshots use separate immutable tags: `v1.0.3-runtime` for the published
+  runtime asset and `v1.0.3-submission` for the final verified source snapshot. No code may assume
+  the two are equal, and no wording may assert that the submission tag exists before it is created
+  -- it names a role, not a fact about the repository today. **Published tags are never moved;
+  later versions use new tags.** A published bundle's manifest records the tag it was released
+  under, so moving that tag would make an already-distributed artifact describe a commit it did not
+  come from.
 - The model is distributed and loaded as canonical JSON only. Never introduce pickle, joblib,
   cloudpickle, or any other executable model format into the bundle or the loader.
 - Safe archive validation is mandatory and `extractall()` is forbidden. Every member is checked for
@@ -495,10 +499,15 @@ named future work; reproduce the measurement with `riskloom.analysis.blindspot`.
   check hashes rather than existence, and must never download or install anything.
 - Do not add a startup flag that skips model binding, and do not bake artifacts into the image. They
   remain read-only mounted inputs.
-- Clean-clone verification against the published release is required after publication and is not
-  satisfied by the local `--archive` drill. Until the release exists, say so plainly rather than
-  implying the download path has been exercised. Never describe a remote download as verified until
-  a real clean clone has performed one.
+- Clean-clone verification against the published release is required after every publication and is
+  not satisfied by a local `--archive` drill. Never describe a remote download as verified until a
+  real clean clone has performed one; where a release has not yet been published, say so plainly
+  rather than implying the path has been exercised. `v1.0.3-runtime` was verified this way on
+  2026-08-26 and the evidence is in the build log's Gate I1 section; a future release earns the same
+  claim only by repeating the drill, never by inheriting this one.
+- Keep release-state wording current. Guidance that says a release is unpublished becomes a lie the
+  moment it ships, and it is the first thing a stranger on a clean clone reads. When publishing,
+  re-check the preflight failure path, the CLI build output and the README together.
 - Archive parsing is anchored at the end-of-central-directory record and never scans for record
   signatures: that byte sequence occurs inside member data, so a scanning parser can be fed forged
   records. Keep every field bounds-checked, and keep ZIP64, multi-disk, commented and encrypted

@@ -156,8 +156,9 @@ would produce a *different* model and invalidate every hash published here. They
 distributed as a hash-pinned release bundle instead, which
 `runtime_bundle.py install` downloads and verifies.
 
-> **The runtime release is not published yet.** Until it is, use the offline `--archive` form
-> below. The download path has not been exercised against a real release.
+The bundle is published at
+[**`v1.0.3-runtime`**](https://github.com/XxSURYANSHxX/riskloom/releases/tag/v1.0.3-runtime), and
+this is the normal path — no manual download, no `--archive`.
 
 ```powershell
 git clone https://github.com/XxSURYANSHxX/riskloom.git
@@ -176,7 +177,8 @@ in source, writes only the five approved paths, and then runs the application's 
 binding, so a bundle that installs but cannot serve is reported as a failure. It accepts no URL
 argument and reads no environment override.
 
-Already have the archive? Install it with no network access at all:
+Already hold a verified archive — an air-gapped machine, a mirrored copy? Install it offline
+instead. This is a secondary path; the command above is the normal one:
 
 ```powershell
 uv run python scripts/runtime_bundle.py install `
@@ -196,10 +198,23 @@ Verify an existing installation at any time:
 uv run python scripts/runtime_bundle.py verify --require-evaluation
 ```
 
+**Verified from a clean clone on 2026-08-26.** A public HTTPS clone with no `artifacts/`
+directory: `uv sync --frozen` succeeded, preflight correctly failed before installation and named
+all four startup artifacts, then plain `install` — no `--archive` — downloaded the published release
+and installed five artifacts with zero hash mismatches. A second install reported all five
+unchanged, and preflight then passed. `/health/live`, `/health/ready`, `/dashboard`,
+`/api/v1/dashboard/model` and `/api/v1/dashboard/drift` all returned HTTP 200 from an isolated
+Compose stack. Existing Docker resources were not modified. Full evidence is in the
+[build log](docs/BUILD_LOG.md).
+
 <details>
 <summary>What the bundle contains, and what it never contains</summary>
 
-Five canonical JSON artifacts, 55,743 bytes in total:
+The published ZIP is **58,070 bytes**, SHA-256
+`5f789aecdd74ab31a92cfdb9da5d8d1312e89ac488b79a763374b5e425046cfe`. The ZIP contains six canonical
+JSON members: five approved runtime artifacts plus one bundle manifest. The manifest validates the
+archive and is not installed, so archive members = 6 and installed artifacts = 5. The five artifacts
+total 55,743 bytes:
 
 | Path | Purpose |
 | --- | --- |
@@ -215,12 +230,21 @@ endpoint has no reference.
 
 It contains **no** simulation events, labels, feature rows, feature reports, per-event predictions,
 campaign or event identifiers, pseudonymous entity tokens, raw payment data, credentials, `.env`,
-API keys, webhook secrets, PII, database contents, caches, or logs. Every member is aggregate JSON
-that this repository already publishes hashes for.
+API keys, webhook secrets, PII, database contents, caches, or logs — and no pickle, joblib, or other
+executable serialised Python. Every member is aggregate JSON this repository already publishes
+hashes for.
 
-The bundle is published under its own immutable runtime tag, `v1.0.3-runtime`, which is
-separate from the source snapshot tag `v1.0.3-submission`. Keeping them apart means the source
-can be re-tagged without invalidating a published asset or forcing a re-upload.
+Two independent layers of provenance, and both must hold. The complete ZIP is pinned in source and
+checked **before any parsing at all**, so a reshaped or tampered file meets a hash comparison rather
+than format-parsing code; the five member hashes are pinned separately and remain authoritative on
+their own. Installation is idempotent — a second run reports all five unchanged and rewrites
+nothing — and fail-closed: a bundle that installs but cannot serve is reported as a failure.
+
+Runtime and submission snapshots use separate immutable tags: `v1.0.3-runtime` for the published
+runtime asset and `v1.0.3-submission` for the final verified source snapshot. Published tags are
+never moved; later versions use new tags. A published bundle's manifest records the tag it was
+released under, so moving that tag would make an already-distributed artifact describe a commit it
+did not come from.
 
 </details>
 

@@ -39,7 +39,8 @@ locally generated datasets; it is not an offensive testing tool and can reach no
 | [Day 8](#day-8-llm-generated-incident-explanations) | Safe explanations | Structured post-decision Gemini enrichment | Optional provider and local-only scope |
 | [Day 9](#day-9-failure-injection-drift-detection-and-docker-packaging) | Failure and drift testing | Database drills, PSI diagnostics, Docker | Frozen-database latency and coarse PSI |
 | [Gate H0](#gate-h0-adversarial-stress-test) | Adversarial stress | Locked-model evasion evaluation | Boundary-spacing and distribution-shift weaknesses |
-| [Gate I0](#gate-i0-public-runtime-artifact-distribution) | Public runtime distribution | Deterministic hash-pinned bundle, corrected preflight, reviewed archive reader | Release not yet published; remote download untested |
+| [Gate I0](#gate-i0-public-runtime-artifact-distribution) | Public runtime distribution | Deterministic hash-pinned bundle, corrected preflight, reviewed archive reader | Single-environment verification |
+| [Gate I1](#gate-i1-public-release-clean-clone-drill) | Published release verified | Real clean-clone install from the public GitHub Release | One Windows/Docker Desktop environment |
 
 ## Contents
 
@@ -56,6 +57,7 @@ locally generated datasets; it is not an offensive testing tool and can reach no
 - [Day 9 failure injection, drift detection, and Docker packaging](#day-9-failure-injection-drift-detection-and-docker-packaging)
 - [Gate H0 adversarial stress test](#gate-h0-adversarial-stress-test)
 - [Gate I0 public runtime artifact distribution](#gate-i0-public-runtime-artifact-distribution)
+- [Gate I1 public release clean-clone drill](#gate-i1-public-release-clean-clone-drill)
 - [Current verified state](#current-verified-state)
 
 ## Day 1 capabilities
@@ -1218,14 +1220,16 @@ only the explicitly resolved temporary checkout was removed.
 
 ### Two tags, deliberately
 
-The runtime artifacts are published under their own immutable tag, `v1.0.3-runtime`, and the
-source snapshot carries `v1.0.3-submission`. Nothing in the installer assumes they match.
+Runtime and submission snapshots use separate immutable tags: `v1.0.3-runtime` for the published
+runtime asset and `v1.0.3-submission` for the final verified source snapshot. Nothing in the
+installer assumes they match, and nothing depends on the submission tag existing.
 
 The reason is practical. A published asset's own manifest records the tag it was released under, so
-that tag can never move. A source tag, by contrast, may well need to be re-cut for a documentation
-fix. Binding both to one name would mean every source correction either invalidated a published
-bundle or forced a needless re-upload of bytes that had not changed. A test asserts the two
-constants differ and that the download URL is built from the runtime tag alone.
+moving that tag would make an already-distributed artifact describe a commit it did not come from.
+Binding both roles to one name would mean every source correction either invalidated a published
+bundle or forced a needless re-upload of bytes that had not changed. Published tags are never moved;
+later versions use new tags. A test asserts the two constants differ and that the download URL is
+built from the runtime tag alone.
 
 ### Security review (Gate I0.1)
 
@@ -1404,17 +1408,132 @@ the five member hashes remain independently authoritative; no parser ever sees a
 multi-directory publication is still not atomic; rollback is still best-effort; and the remote
 release download is still unproven.
 
-### Known limitation: the remote path is untested
+### Known limitation at the time of Gate I0: the remote path was untested
 
-**The GitHub Release does not exist.** Tag `v1.0.3-runtime` has not been created and
-`riskloom-runtime-artifacts.zip` has not been uploaded anywhere. Everything above was proven against
+*Recorded as the state on completion of Gate I0, and since resolved. Kept as written because what a
+gate could honestly claim at the time it closed is part of the record.*
+
+**At that point the GitHub Release did not exist.** Tag `v1.0.3-runtime` had not been created and
+`riskloom-runtime-artifacts.zip` had not been uploaded anywhere. Everything above was proven against
 a locally built archive through the `--archive` path; the download path was exercised only against a
 mocked transport, which asserts the request goes to the fixed URL and nowhere else.
 
-Until the release is published, `runtime_bundle.py install` without `--archive` fails with
-`runtime_bundle_download_failed`. Verifying a genuinely clean remote clone -- clone, `uv sync`,
-install, preflight, compose up -- remains required after publication and has not been done. No claim
-of remote success appears anywhere in this repository.
+Verifying a genuinely clean remote clone -- clone, `uv sync`, install, preflight, compose up -- was
+named as required after publication and had not been done. **It has since been done:** see
+[Gate I1](#gate-i1-public-release-clean-clone-drill), which records the real drill against the
+published release.
+
+## Gate I1 public release clean-clone drill
+
+Gate I0 ended with the honest statement that the remote download path had never been exercised
+against a real release, because no release existed. It does now, and this is what actually happened
+when a genuine public clone tried to use it on 2026-08-26.
+
+### Source and release
+
+Original `HEAD` and `origin/main` were both `4c82de34d2ee7ac8b9786561f42285ff3600935a`, and
+`v1.0.3-runtime` peeled to that same commit. The public clone contained **no `artifacts/` directory
+at all** — the starting condition the whole distribution mechanism exists for.
+
+```text
+https://github.com/XxSURYANSHxX/riskloom/releases/download/v1.0.3-runtime/riskloom-runtime-artifacts.zip
+sha256  5f789aecdd74ab31a92cfdb9da5d8d1312e89ac488b79a763374b5e425046cfe
+size    58,070 bytes
+```
+
+The asset was independently re-downloaded and hashed outside the installer; both the digest and the
+byte count matched exactly.
+
+### Dependency and preflight behaviour
+
+`uv sync --frozen` completed in **6.9 seconds** and `uv lock --check` passed. Preflight, run before
+any installation, exited **1** and named all four startup-required artifacts, with the held-out
+evaluation reported separately as a complete-product requirement. It created no `artifacts/`
+directory: the read-only guarantee held.
+
+### Installation
+
+No `--archive`. No URL, tag, hash, environment variable or configuration override of any kind.
+
+| Run | Result | Exit | Duration |
+| --- | --- | ---: | ---: |
+| First `install` | 5 installed, serving binding verified | 0 | 9.4 s |
+| Second `install` | all five reported unchanged | 0 | 19.7 s |
+
+The second run rewrote nothing: file sizes *and* modification times were byte-stable across both
+installs. Preflight afterwards exited **0**.
+
+### Installed artifact set
+
+| Artifact | Bytes |
+| --- | ---: |
+| `model.json` | 18,537 |
+| `training_report.json` | 29,060 |
+| model `manifest.json` | 3,557 |
+| feature `manifest.json` | 898 |
+| `evaluation.json` | 3,691 |
+
+Zero hash mismatches against the source-pinned values. The model directory contained exactly its
+three files, and exactly five JSON artifacts were installed in total — no raw events, feature rows,
+labels, credentials, PII, or executable serialised objects, and nothing outside the approved paths.
+
+Model ID `658e2d22…`, feature dataset ID `4b1ec1e0…` matching the modeling contract, locked
+threshold `0.0033862949155182734`, 75 features, selected candidate `gradient_boosting`.
+
+### Isolated Compose drill
+
+The clone at `C:\rl-v103-remote` ran under project `rlv103drill` on `127.0.0.1:8030` (app) and
+`127.0.0.1:5463` (database), built as `riskloom-app:v103-drill`. That last point mattered: the
+tracked Compose file declares `riskloom-app:local`, a tag the author's own long-running stack is
+built from, so a drill override claimed a separate tag rather than rebuilding an image another
+project depends on. The rendered configuration contained no reference to `riskloom-app:local`.
+
+Credentials were synthetic and local-only, and the Gemini key was empty. The migrate service exited
+0 and the app reached `healthy` under bounded polling rather than a fixed sleep.
+
+### Endpoint results
+
+| Endpoint | Status |
+| --- | ---: |
+| `/health/live` | 200 |
+| `/health/ready` | 200 |
+| `/dashboard` | 200 |
+| `/api/v1/dashboard/model` | 200 |
+| `/api/v1/dashboard/drift` | 200 |
+
+The model panel reported the locked development evaluation: 17,000 held-out rows, 340 attacks,
+recall `0.9764705882352941`. Drift reported `reference_rows: 17000`, `observed_rows: 0`,
+`minimum_rows: 200`, status `insufficient_data` — correct for an empty ledger, and the same
+refusal-to-report-a-band behaviour Day 9 built.
+
+### Teardown and non-interference
+
+Only the drill's containers, network and volume were removed, and the drill image only after it was
+proven unreferenced. No prune command was used at any point. Afterwards the selected ports were free
+again, and comparison against the pre-drill snapshot showed all five pre-existing container IDs and
+states unchanged, along with every existing network, volume, image and Compose project.
+`riskloom-app:local` remained image ID `070045b597a1` throughout — the shared tag was never rebuilt.
+
+The original repository stayed clean and synchronised, and the clean clone was preserved rather than
+deleted so the result can be inspected.
+
+### Honest limitations
+
+This was one environment: Windows with Docker Desktop. It is evidence that the published path works,
+not a claim of universal platform compatibility. Network and GitHub availability are external
+dependencies the drill cannot vouch for. Credentials were synthetic, and no real payment or webhook
+action occurred. No protected test rows were accessed — only already-published aggregates were read.
+A `VIRTUAL_ENV` mismatch warning appeared because the parent shell pointed at another checkout's
+environment; `uv` correctly ignored it and used the clone's own `.venv`, so it had no effect.
+
+### One defect this drill found
+
+Preflight's failure guidance still said *"The runtime release is not published yet; until it is,
+install from a local archive instead"*. That had been true when written and was now false, so a
+first-time user on a clean clone was told the opposite of the truth and steered toward `--archive`
+when the plain command worked. The same stale wording appeared in the CLI's build output and the
+README. Corrected in Gate I2; the drill itself changed nothing, because a verification that edits
+the thing it is verifying proves nothing.
 
 ## Current verified state
 
@@ -1423,7 +1542,7 @@ Every figure below is the result of running the command, not a recollection.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Test suite | `uv run pytest --cov=riskloom --cov-fail-under=90` | **1,106 passed**, 0 failed |
+| Test suite | `uv run pytest --cov=riskloom --cov-fail-under=90` | **1,116 passed**, 0 failed |
 | Coverage | same run, branch-aware | **90.21%** (gate: 90%) |
 | Format | `uv run ruff format --check .` | 196 files already formatted |
 | Lint | `uv run ruff check .` | All checks passed |

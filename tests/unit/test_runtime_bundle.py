@@ -1933,3 +1933,322 @@ def test_two_installers_publishing_the_same_bundle_cannot_corrupt_content(
     for member in BUNDLE_MEMBERS:
         assert (destination / member).read_bytes() == FIXTURES[member]
     verify_installation(root=destination, require_evaluation=True)
+
+
+# ============================================ Gate I2: published-release guidance is current
+
+
+def _preflight_module() -> Any:
+    """Load ``scripts/preflight_check.py`` by path; it is a script, not an importable package."""
+
+    import importlib.util
+
+    root = Path(runtime_bundle.__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "riskloom_preflight_under_test", root / "scripts" / "preflight_check.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _preflight_failure_output(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> str:
+    """Run preflight against a tree that has configuration but no runtime artifacts."""
+
+    import shutil
+
+    module = _preflight_module()
+    root = Path(runtime_bundle.__file__).resolve().parents[2]
+    for config in ("configs/features/default.json", "configs/modeling/default.json"):
+        (tmp_path / config).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / config, tmp_path / config)
+
+    module.REPOSITORY_ROOT = tmp_path
+    exit_code = module.main()
+    captured = capsys.readouterr().out
+    assert exit_code == 1, "a tree with no runtime artifacts must fail"
+    return captured
+
+
+def test_missing_artifact_preflight_recommends_the_plain_install_command(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """The primary path is the one a stranger on a clean clone should be handed."""
+
+    output = _preflight_failure_output(capsys, tmp_path)
+    assert "uv run python scripts/runtime_bundle.py install" in output
+    assert "published v1.0.3-runtime GitHub Release" in output
+
+
+def test_preflight_no_longer_claims_the_release_is_unpublished(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """The stale statement Gate I1 caught in the field.
+
+    It was true when written and false the moment the release shipped, which is exactly the class
+    of wording that misleads a first-time reader.
+    """
+
+    output = _preflight_failure_output(capsys, tmp_path).lower()
+    for stale in (
+        "not published yet",
+        "until it is",
+        "until it exists",
+        "release does not exist",
+    ):
+        assert stale not in output, f"stale release-state wording: {stale!r}"
+
+
+def test_preflight_frames_the_offline_archive_as_secondary(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """``--archive`` must remain available, but never be what a normal user is steered to."""
+
+    output = _preflight_failure_output(capsys, tmp_path)
+    assert "--archive" in output, "the offline path stays documented"
+
+    primary = output.index("Install the runtime bundle:")
+    offline = output.index("--archive")
+    assert primary < offline, "the plain install command must be presented first"
+    assert "Already have a verified archive?" in output
+
+
+def test_preflight_remains_read_only(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    """Guidance changed; behaviour did not. Preflight still installs and downloads nothing."""
+
+    _preflight_failure_output(capsys, tmp_path)
+    assert not (tmp_path / "artifacts").exists(), "preflight created an artifact tree"
+
+    source = (
+        Path(runtime_bundle.__file__).resolve().parents[2] / "scripts" / "preflight_check.py"
+    ).read_text(encoding="utf-8")
+    for forbidden in ("install_from_release", "install_from_archive", "download_release_asset"):
+        assert forbidden not in source, f"preflight must not call {forbidden}"
+
+
+def test_preflight_still_reports_all_three_states(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """Absent, present-and-valid and present-but-invalid must all survive the wording change."""
+
+    module = _preflight_module()
+    assert (module.PRESENT, module.MISSING, module.INVALID) == ("ok", "missing", "invalid")
+
+    output = _preflight_failure_output(capsys, tmp_path)
+    assert "[missing]" in output
+    assert "required to start:" in output
+    assert "required for the complete product:" in output
+    # All four startup members are named individually, not summarised.
+    for member in STARTUP_MEMBERS:
+        assert member in output
+
+
+def test_the_build_output_states_the_release_is_published(
+    capsys: pytest.CaptureFixture[str], source: Path, tmp_path: Path
+) -> None:
+    """Build guidance is read by whoever cuts the next release; it must describe today."""
+
+    import importlib.util
+
+    root = Path(runtime_bundle.__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "riskloom_bundle_cli_under_test", root / "scripts" / "runtime_bundle.py"
+    )
+    assert spec and spec.loader
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(cli, "build_bundle", lambda output: output)
+    try:
+        assert cli._build(tmp_path / "out.zip") == 0
+    finally:
+        monkey.undo()
+    output = capsys.readouterr().out
+
+    assert "The official runtime asset is published at v1.0.3-runtime" in output
+    assert "uv run python scripts/runtime_bundle.py install" in output
+    assert "--archive" in output, "the offline path stays mentioned"
+    for stale in ("not published yet", "until it exists"):
+        assert stale not in output.lower()
+
+
+def test_the_build_output_does_not_claim_the_submission_tag_exists(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """``v1.0.3-submission`` does not exist yet, so no output may assert that it does.
+
+    It names a role the final verified source snapshot will occupy. Saying the source "is tagged"
+    is a claim about the repository today, and today it is false.
+    """
+
+    import importlib.util
+
+    root = Path(runtime_bundle.__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "riskloom_bundle_cli_tagcheck", root / "scripts" / "runtime_bundle.py"
+    )
+    assert spec and spec.loader
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(cli, "build_bundle", lambda output: output)
+    try:
+        cli._build(tmp_path / "out.zip")
+    finally:
+        monkey.undo()
+    output = capsys.readouterr().out
+
+    assert SUBMISSION_TAG in output, "the submission tag is still named as a separate role"
+    assert "separate immutable tags" in output
+    assert "Published tags are never moved" in output
+    for claim in (
+        "is tagged separately",
+        "has been tagged",
+        f"published at {SUBMISSION_TAG}",
+        f"{SUBMISSION_TAG} exists",
+        f"released as {SUBMISSION_TAG}",
+        "the source snapshot is tagged",
+    ):
+        assert claim.lower() not in output.lower(), f"existence claim in build output: {claim!r}"
+
+
+GUIDANCE_SOURCES = (
+    "scripts/runtime_bundle.py",
+    "scripts/preflight_check.py",
+    "src/riskloom/runtime_bundle.py",
+    "README.md",
+    "AGENTS.md",
+)
+
+# Wording that either moves a published tag or asserts the submission tag already exists. Both are
+# false statements about this repository, and both are the kind that quietly survive a release.
+FORBIDDEN_TAG_WORDING = (
+    "can be re-tagged",
+    "may be re-cut",
+    "re-tag the source",
+    "is tagged separately",
+    "has been tagged",
+    "reusing an old",
+    "relabelling an old",
+)
+
+
+def test_no_guidance_moves_a_published_tag_or_claims_the_submission_tag_exists() -> None:
+    """Immutability is the whole reason the two tags are separate.
+
+    A published bundle's manifest records the tag it shipped under, so moving that tag would make a
+    distributed artifact describe a commit it never came from. And the submission tag does not
+    exist yet, so nothing may state that it does.
+    """
+
+    root = Path(runtime_bundle.__file__).resolve().parents[2]
+    for relative in GUIDANCE_SOURCES:
+        text = (root / relative).read_text(encoding="utf-8").lower()
+        for phrase in FORBIDDEN_TAG_WORDING:
+            assert phrase not in text, f"{relative} contains {phrase!r}"
+
+
+def test_every_guidance_source_uses_the_same_immutable_tag_wording() -> None:
+    """One rule stated five different ways is five things to keep in sync, and they drift."""
+
+    root = Path(runtime_bundle.__file__).resolve().parents[2]
+    for relative in GUIDANCE_SOURCES:
+        text = (root / relative).read_text(encoding="utf-8").lower()
+        if SUBMISSION_TAG.lower() not in text:
+            continue
+        assert "separate immutable tags" in text, f"{relative} omits the shared tag wording"
+        assert "never moved" in text, f"{relative} omits the immutability statement"
+
+
+def test_the_submission_tag_is_described_as_a_role_not_a_fact() -> None:
+    """Documented as something that will exist, not as something that already does."""
+
+    root = Path(runtime_bundle.__file__).resolve().parents[2]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    assert SUBMISSION_TAG in readme, "the submission tag's role stays documented"
+    assert "for the final verified source snapshot" in readme
+    assert "later versions use new tags" in readme
+
+
+def test_the_release_identity_and_pins_are_unchanged_by_this_gate() -> None:
+    """Documentation moved; nothing the installer trusts did."""
+
+    assert RELEASE_TAG == "v1.0.3-runtime"
+    assert ASSET_NAME == "riskloom-runtime-artifacts.zip"
+    assert RELEASE_URL == (
+        "https://github.com/XxSURYANSHxX/riskloom/releases/download/"
+        "v1.0.3-runtime/riskloom-runtime-artifacts.zip"
+    )
+    assert REAL_EXPECTED_ARCHIVE_SHA256 == (
+        "5f789aecdd74ab31a92cfdb9da5d8d1312e89ac488b79a763374b5e425046cfe"
+    )
+    assert dict(REAL_EXPECTED_SHA256) == {
+        "artifacts/models/development/model.json": (
+            "3db8dafef643261c0df559cab632cfaf6fc45be54f38c1f4a621ef5af84039d4"
+        ),
+        "artifacts/models/development/training_report.json": (
+            "4ff96556f1df49d7c44c29703c328753a6ea0ef197410976100e84751943ea6d"
+        ),
+        "artifacts/models/development/manifest.json": (
+            "00aa16380eee1dcfa26fe9c89ed0eb8f866e75e98bd7a7ba89f9cc228c792f2e"
+        ),
+        "artifacts/features/development-v1.1.0-config-bound/manifest.json": (
+            "15337d0e9220f7ca96b4ded8157bc3ad29f38a6c5db9d357dea00b09371f28ba"
+        ),
+        "artifacts/evaluations/development/evaluation.json": (
+            "11251cef0dade5d14d2d1a85fe3822126e01c2a354494dd09b720c679244c40d"
+        ),
+    }
+    assert runtime_bundle.BUNDLE_MANIFEST_NAME == "bundle_manifest.json"
+    assert runtime_bundle.ZIP_COMPRESSION == zipfile.ZIP_STORED
+
+
+def test_the_readme_documents_the_published_release_not_an_absent_one() -> None:
+    """The first thing a stranger reads must match what actually happens."""
+
+    root = Path(runtime_bundle.__file__).resolve().parents[2]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+
+    assert "https://github.com/XxSURYANSHxX/riskloom/releases/tag/v1.0.3-runtime" in readme, (
+        "the README must link the published release"
+    )
+    assert "58,070 bytes" in readme
+    assert "5f789aecdd74ab31a92cfdb9da5d8d1312e89ac488b79a763374b5e425046cfe" in readme
+    assert "Verified from a clean clone on 2026-08-26" in readme
+    for stale in ("not published yet", "has not been exercised against a real release"):
+        assert stale not in readme, f"stale README wording: {stale!r}"
+
+
+def test_the_readme_states_the_archive_member_count_precisely() -> None:
+    """Six members, five installed. Saying "five JSON artifacts" alone reads as five members."""
+
+    root = Path(runtime_bundle.__file__).resolve().parents[2]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+
+    assert "six canonical" in readme and "JSON members" in readme
+    assert "five approved runtime artifacts" in readme
+    assert "one bundle manifest" in readme
+    assert "archive members = 6" in readme
+    assert "installed artifacts = 5" in readme
+    # The manifest is validation machinery, not a sixth runtime artifact.
+    assert "is not installed" in readme
+
+
+def test_the_archive_really_has_six_members_and_five_installable_artifacts(
+    archive: Path, destination: Path
+) -> None:
+    """The documented counts, checked against the archive rather than against the prose."""
+
+    with zipfile.ZipFile(archive) as handle:
+        names = handle.namelist()
+    assert len(names) == 6, names
+    assert set(names) == {*BUNDLE_MEMBERS, BUNDLE_MANIFEST_NAME}
+
+    result = install_from_archive(archive, root=destination)
+    assert len(result.installed) == 5
+    assert BUNDLE_MANIFEST_NAME not in result.installed
+    installed = [p for p in (destination / "artifacts").rglob("*") if p.is_file()]
+    assert len(installed) == 5, "the bundle manifest must never be installed"

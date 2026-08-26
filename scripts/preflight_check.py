@@ -35,9 +35,11 @@ from riskloom.runtime_bundle import (  # noqa: E402
 )
 
 INSTALL_COMMAND = "uv run python scripts/runtime_bundle.py install"
-# The runtime release is not published yet, so the plain install command cannot succeed. Pointing a
-# first-time reader at a command that fails is worse than saying nothing, so the offline form is
-# offered alongside it until the release exists.
+# The primary command, and the only one an ordinary first-time reader needs: it downloads the pinned
+# asset from the published v1.0.3-runtime GitHub Release, verifies it, and installs it.
+RELEASE_TAG_NAME = "v1.0.3-runtime"
+# Secondary, and deliberately described as such. It exists for someone who already holds a verified
+# archive -- an air-gapped machine, a mirrored copy -- not as a workaround for the normal path.
 OFFLINE_COMMAND = (
     "uv run python scripts/runtime_bundle.py install --archive <path to "
     "riskloom-runtime-artifacts.zip>"
@@ -131,8 +133,12 @@ def main() -> int:
         print("retraining would produce a different model and break the locked-artifact contract.")
         print("\nInstall the runtime bundle:")
         print(f"  {INSTALL_COMMAND}")
-        print("\nThe runtime release is not published yet; until it is, install from a local")
-        print("archive instead:")
+        print(
+            f"\nThat downloads the pinned asset from the published {RELEASE_TAG_NAME} GitHub"
+            " Release,"
+        )
+        print("verifies it against the hashes built into this source, and installs it.")
+        print("\nAlready have a verified archive? Install it offline instead:")
         print(f"  {OFFLINE_COMMAND}")
         return 1
 
@@ -143,6 +149,7 @@ def main() -> int:
         print(f"\nStartup binding failed: {error}")
         print("\nReinstall the runtime bundle:")
         print(f"  {INSTALL_COMMAND}")
+        print("\nor, from a verified archive you already hold:")
         print(f"  {OFFLINE_COMMAND}")
         return 1
 
