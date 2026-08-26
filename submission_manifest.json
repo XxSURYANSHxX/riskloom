@@ -1,0 +1,241 @@
+{
+  "schema_version": "1.0.0",
+  "project": {
+    "name": "RiskLoom",
+    "distribution": "riskloom",
+    "mode": "defense_only_shadow_mode"
+  },
+  "competition": {
+    "name": "Razorpay AI Buildathon 2026"
+  },
+  "track": {
+    "id": "02",
+    "name": "AI Risk Manager",
+    "display_name": "Track 02 — AI Risk Manager"
+  },
+  "problem": "Low-value card-testing attempts can look ordinary individually while forming coordinated abuse that compounds into merchant loss.",
+  "solution": {
+    "summary": "RiskLoom computes 75 causal temporal features, applies a locked calibrated model and one threshold, and records an auditable checkout outcome.",
+    "feature_count": 75,
+    "risk_decisions": [
+      "allow",
+      "deny"
+    ],
+    "operational_actions": [
+      "allow",
+      "review",
+      "deny"
+    ],
+    "audit_ledger": "append_only"
+  },
+  "baseline_release": {
+    "submission_tag": "v1.0.3-submission",
+    "commit_sha": "ff36ba091f5bcf44b45e40044139996663f03bca",
+    "runtime_release_tag": "v1.0.3-runtime",
+    "immutable": true
+  },
+  "evaluator_readiness_package": {
+    "based_on_tag": "v1.0.3-submission",
+    "based_on_commit": "ff36ba091f5bcf44b45e40044139996663f03bca",
+    "change_scope": [
+      "documentation",
+      "machine_readable_metadata",
+      "validation_tests"
+    ],
+    "release_type": "source_submission",
+    "model_changed": false,
+    "runtime_changed": false,
+    "runtime_bundle_changed": false,
+    "artifact_hashes_changed": false,
+    "features_changed": false,
+    "apis_changed": false,
+    "schema_changed": false,
+    "dependencies_changed": false,
+    "inference_behavior_changed": false
+  },
+  "ai_judgment": {
+    "decision_authority": "locked_calibrated_model_with_one_threshold",
+    "risk_decision_values": [
+      "allow",
+      "deny"
+    ],
+    "review_role": "operational_fail_safe_only",
+    "gemini_role": "human_requested_post_decision_explanation_for_final_deny_only",
+    "gemini_can_change_score_threshold_decision_action_or_payment": false,
+    "gemini_required_for_deterministic_core": false
+  },
+  "evaluation": {
+    "kind": "chronological_held_out_synthetic",
+    "source": {
+      "path": "artifacts/evaluations/development/evaluation.json",
+      "sha256": "11251cef0dade5d14d2d1a85fe3822126e01c2a354494dd09b720c679244c40d",
+      "evaluation_id": "77bd6b569b8e5a38f14a515917235ae2cfe07536d621262e87ed4a777757bc88"
+    },
+    "row_count": 17000,
+    "attack_count": 340,
+    "legitimate_count": 16660,
+    "campaign_recall": {
+      "numerator": 3,
+      "denominator": 3,
+      "value": 1.0
+    },
+    "event_recall": {
+      "numerator": 332,
+      "denominator": 340,
+      "value": 0.9764705882352941
+    },
+    "precision": {
+      "numerator": 332,
+      "denominator": 432,
+      "value": 0.7685185185185185
+    },
+    "false_positive_rate": {
+      "numerator": 100,
+      "denominator": 16660,
+      "value": 0.006002400960384154
+    },
+    "average_precision": 0.9640050726365282,
+    "roc_auc": 0.9886240378504344,
+    "decision_threshold": 0.0033862949155182734,
+    "confusion_matrix": {
+      "true_positive": 332,
+      "false_positive": 100,
+      "true_negative": 16560,
+      "false_negative": 8
+    },
+    "accuracy_scope": "offline evaluation with true prior outcomes; not measured live-serving accuracy"
+  },
+  "false_positive_cost": {
+    "false_positive_count": 100,
+    "configured_weight_units_per_false_positive": 1,
+    "observed_false_positive_cost_units": 100,
+    "configured_weight_units_per_false_negative": 25,
+    "total_threshold_cost_units": 300,
+    "currency_value": null,
+    "currency_claim": false,
+    "artifact_boundary": "The aggregate evaluation records binary threshold flags, not executed live actions.",
+    "live_policy": {
+      "threshold_positive_action": "deny",
+      "deny_creates_razorpay_order": false,
+      "review_is_operational_fail_safe": true
+    }
+  },
+  "safety_boundaries": {
+    "defense_only": true,
+    "synthetic_data": true,
+    "shadow_mode": true,
+    "razorpay_mode": "test_only",
+    "payment_capture": false,
+    "payment_refund": false,
+    "payment_settlement": false,
+    "payment_modification": false,
+    "public_order_creation_endpoint": false,
+    "strict_chronological_isolation": true,
+    "raw_payment_data_persisted": false,
+    "external_adversarial_target": false,
+    "post_decision_explanations_can_change_decision": false
+  },
+  "reproduction": {
+    "quick_preflight": {
+      "prerequisites": [
+        "Python 3.11",
+        "uv",
+        "installed pinned runtime bundle"
+      ],
+      "fresh_clone_setup_commands": [
+        "uv sync --frozen",
+        "uv run python scripts/runtime_bundle.py install"
+      ],
+      "command": "uv run python scripts/preflight_check.py",
+      "docker_required": false,
+      "postgresql_required": false,
+      "razorpay_credentials_required": false,
+      "gemini_credentials_required": false,
+      "observed_runtime_seconds": 5.9,
+      "runtime_observation_environment_dependent": true,
+      "checks": [
+        "tracked feature and modeling configuration exists",
+        "four startup artifacts match source-pinned SHA-256 hashes",
+        "held-out evaluation state is reported separately",
+        "the application serving bundle binds successfully"
+      ],
+      "success_exit_code": 0,
+      "success_message": "All startup requirements present and the serving binding succeeds.",
+      "blocking_failure_exit_code": 1,
+      "blocking_failure_message_pattern": "required file(s) missing or invalid"
+    },
+    "full_validation": {
+      "docker_required": true,
+      "postgresql_provisioning": "disposable PostgreSQL through testcontainers",
+      "external_razorpay_or_gemini_calls": false,
+      "commands": [
+        "uv lock --check",
+        "uv run ruff format --check .",
+        "uv run ruff check .",
+        "uv run mypy src",
+        "uv run pytest --cov=riskloom --cov-report=term-missing --cov-fail-under=90",
+        "uv run alembic check"
+      ]
+    }
+  },
+  "evidence": {
+    "judge_guide_path": "docs/JUDGING.md",
+    "architecture_path": "README.md",
+    "build_and_failure_log_path": "docs/BUILD_LOG.md",
+    "preflight_path": "scripts/preflight_check.py",
+    "runtime_distribution_path": "src/riskloom/runtime_bundle.py",
+    "decision_rule_path": "src/riskloom/serving/decisions.py",
+    "preflight_orchestration_path": "src/riskloom/services/preflight.py",
+    "manifest_validation_test_path": "tests/unit/test_submission_manifest.py",
+    "runtime_recovery_test_path": "tests/unit/test_runtime_bundle.py",
+    "checkout_integration_test_path": "tests/integration/test_checkout_preflight.py",
+    "train_serve_parity_test_path": "tests/unit/serving/test_train_serve_parity.py",
+    "explanation_isolation_test_path": "tests/unit/explanations/test_isolation.py",
+    "docker_compose_path": "compose.yaml",
+    "environment_example_path": ".env.example",
+    "locked_artifacts": [
+      {
+        "path": "artifacts/models/development/model.json",
+        "sha256": "3db8dafef643261c0df559cab632cfaf6fc45be54f38c1f4a621ef5af84039d4"
+      },
+      {
+        "path": "artifacts/models/development/training_report.json",
+        "sha256": "4ff96556f1df49d7c44c29703c328753a6ea0ef197410976100e84751943ea6d"
+      },
+      {
+        "path": "artifacts/models/development/manifest.json",
+        "sha256": "00aa16380eee1dcfa26fe9c89ed0eb8f866e75e98bd7a7ba89f9cc228c792f2e"
+      },
+      {
+        "path": "artifacts/features/development-v1.1.0-config-bound/manifest.json",
+        "sha256": "15337d0e9220f7ca96b4ded8157bc3ad29f38a6c5db9d357dea00b09371f28ba"
+      },
+      {
+        "path": "artifacts/evaluations/development/evaluation.json",
+        "sha256": "11251cef0dade5d14d2d1a85fe3822126e01c2a354494dd09b720c679244c40d"
+      }
+    ]
+  },
+  "known_limitations": [
+    {
+      "name": "live_state_outcome_blind_spot",
+      "summary": "The 18 failure-derived features read low before outcomes exist; held-out metrics are not live-serving accuracy.",
+      "evidence_path": "docs/BUILD_LOG.md"
+    },
+    {
+      "name": "boundary_spaced_evasion",
+      "summary": "Measured synthetic boundary spacing reduced event recall to between 0.00 and 0.12; exact 3600-second spacing detected 0 of 120 attack events.",
+      "evidence_path": "docs/BUILD_LOG.md"
+    },
+    {
+      "name": "decision_threshold_tie_cluster",
+      "summary": "The locked threshold is one float64 step above an eight-row policy-selection probability cluster; the diagnostic is non-fatal and held-out metrics are unaffected.",
+      "evidence_path": "docs/BUILD_LOG.md"
+    },
+    {
+      "name": "local_shadow_mode_boundaries",
+      "summary": "Live feature state is per process, review items have no resolution workflow, and a frozen database failure is safe but not bounded server-side.",
+      "evidence_path": "README.md"
+    }
+  ]
+}

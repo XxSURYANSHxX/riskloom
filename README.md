@@ -15,6 +15,36 @@
 
 </div>
 
+## 30-second judge card
+
+**Merchant-loss problem:** low-value card-testing attempts look ordinary one by one, so merchants
+need coordinated abuse detected before repeated checkout attempts become losses.
+
+**RiskLoom:** a defense-only, shadow-mode risk manager that turns 75 causal temporal features into
+an auditable checkout risk decision; Gemini remains post-decision, and the system never captures or
+modifies payments.
+
+| Judge question | Verified answer |
+| --- | --- |
+| Track | **Track 02 — AI Risk Manager** |
+| Held-out proof | **17,000** synthetic chronological test events; **340** attacks; campaign recall **3/3 (100%)**; event recall **332/340 (97.65%)** |
+| Decision quality | Precision **76.85%**; average precision **96.40%**; ROC-AUC **98.86%** |
+| False-positive burden | **100/16,660 legitimate events (0.60%)**, with **16,560** true negatives; costs are abstract policy units, never rupee savings |
+| AI judgment | The locked calibrated model makes the `ALLOW`/`DENY` risk decision; `REVIEW` is an operational fail-safe. Gemini only explains an already-final `DENY` and cannot alter its score, threshold, decision, action, or payment behavior. |
+| Safety boundary | Defense-only; synthetic data; Razorpay test mode; no capture, refund, settlement, payment modification, or public order-creation endpoint |
+
+**Verify:** run [`uv run python scripts/preflight_check.py`](scripts/preflight_check.py), then follow
+the [evaluator evidence map](docs/JUDGING.md). See the [architecture](#how-it-works),
+[held-out evidence](docs/BUILD_LOG.md#day-4-offline-model-locking), [safety boundary](#safety-by-design),
+[reproduction path](#run-locally), and strict [submission manifest](submission_manifest.json).
+
+**Baseline relationship:** `v1.0.3-submission` at
+`ff36ba091f5bcf44b45e40044139996663f03bca` is the immutable engineering and runtime baseline
+immediately preceding this evaluator-readiness package. This package changes documentation,
+machine-readable metadata, and validation tests only and is suitable for a new source submission
+release; it does not change the model, runtime bundle, artifact hashes, features, APIs, schema,
+dependencies, or inference behavior.
+
 <p align="center">
   <img src="docs/assets/riskloom-coordination.png" alt="RiskLoom coordination dashboard connecting checkout decisions through a shared device and network" width="100%">
 </p>
@@ -354,6 +384,8 @@ both layers must hold.
 
 ## Further reading
 
+- [`docs/JUDGING.md`](docs/JUDGING.md) is the shortest rubric-to-evidence map for evaluators.
+- [`submission_manifest.json`](submission_manifest.json) exposes the same verified claims as strict JSON.
 - [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md) contains the complete engineering, evaluation, and failure record.
 - [`AGENTS.md`](AGENTS.md) defines the repository's durable safety and implementation rules.
 - [`.env.example`](.env.example) documents the local configuration surface.
