@@ -180,7 +180,7 @@
   },
   "evidence": {
     "judge_guide_path": "docs/JUDGING.md",
-    "architecture_path": "README.md",
+    "architecture_path": "docs/ARCHITECTURE.md",
     "build_and_failure_log_path": "docs/BUILD_LOG.md",
     "preflight_path": "scripts/preflight_check.py",
     "runtime_distribution_path": "src/riskloom/runtime_bundle.py",

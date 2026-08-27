@@ -11,7 +11,7 @@
 
 **Live checkout scoring · campaign coordination · explainable decisions · append-only audit trail**
 
-[Results](#held-out-evaluation) · [How it works](#how-it-works) · [Run locally](#run-locally) · [Safety](#safety-by-design) · [Limitations](#what-testing-revealed)
+[Results](#held-out-evaluation) · [Architecture](#system-architecture) · [Run locally](#run-locally) · [Safety](#safety-by-design) · [Limitations](#what-testing-revealed)
 
 </div>
 
@@ -34,7 +34,7 @@ modifies payments.
 | Safety boundary | Defense-only; synthetic data; Razorpay test mode; no capture, refund, settlement, payment modification, or public order-creation endpoint |
 
 **Verify:** run [`uv run python scripts/preflight_check.py`](scripts/preflight_check.py), then follow
-the [evaluator evidence map](docs/JUDGING.md). See the [architecture](#how-it-works),
+the [evaluator evidence map](docs/JUDGING.md). See the [architecture](docs/ARCHITECTURE.md),
 [held-out evidence](docs/BUILD_LOG.md#day-4-offline-model-locking), [safety boundary](#safety-by-design),
 [reproduction path](#run-locally), and strict [submission manifest](submission_manifest.json).
 
@@ -58,6 +58,16 @@ Card-testing attempts often look harmless in isolation. The amounts are small, t
 RiskLoom finds that coordination while a checkout is still in progress. It computes 75 causal temporal features, scores the attempt with a locked calibrated model, returns `ALLOW`, `REVIEW`, or `DENY`, and records the evidence behind the outcome. Operators can watch the pattern form in real time without giving an LLM or dashboard control over the decision.
 
 RiskLoom is defense-only and shadow-mode by construction. It uses synthetic data and Razorpay test mode. It never captures, refunds, settles, or modifies a payment.
+
+## System Architecture
+
+RiskLoom keeps deterministic model judgment, operational safety, external Razorpay test-mode
+operations, generative explanations, and append-only audit evidence in separate trust boundaries.
+The locked model makes only `ALLOW` or `DENY` risk decisions; `REVIEW` is an operational safety
+outcome when execution cannot safely complete. Gemini operates after a finalized `DENY`, outside
+the decision boundary, and cannot change the score, threshold, decision, action, or payment
+behavior. See the complete [system architecture, trust-boundary table, and failure
+model](docs/ARCHITECTURE.md).
 
 ## What it does
 
