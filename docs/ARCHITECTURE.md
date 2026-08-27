@@ -59,7 +59,7 @@ flowchart TB
         delivery["Append webhook event and observation<br/>atomically as delivered; never replay<br/>into live feature state"]
         ledger["PostgreSQL append-only evidence<br/>pseudonymous decisions and sanitized webhooks"]
         dashboard["Read-only investigator dashboard<br/>stored decisions and offline aggregates"]
-        graph["Deterministic campaign coordination graph<br/>built from ledger co-occurrence"]
+        coordination_graph["Deterministic campaign coordination graph<br/>built from ledger co-occurrence"]
         drift["Read-only PSI drift monitor<br/>minimum 200 scored observations<br/>no effect on any individual decision"]
         explanation_gate{"Human requests explanation<br/>for a finalized DENY?"}
         allowlisted["Allowlisted recorded evidence only<br/>numbers, booleans, closed enums;<br/>current decision excluded from prior context"]
@@ -71,7 +71,7 @@ flowchart TB
         webhook_dedupe -->|no| projection --> delivery --> ledger
         finalize --> ledger
         ledger --> dashboard
-        ledger --> graph --> dashboard
+        ledger --> coordination_graph --> dashboard
         ledger --> drift --> dashboard
         ledger --> explanation_gate
         explanation_gate -->|eligible and requested| allowlisted --> gemini_api --> validated_explanation --> explanation_store --> dashboard
